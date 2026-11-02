@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#0b1220" />
+<title>Water Sort Puzzle</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box;
+      -webkit-tap-highlight-color:transparent;
+      -webkit-user-select:none; user-select:none; }
+  html, body {
+    width:100%; height:100%; overflow:hidden; background:#080d16;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    touch-action:none; overscroll-behavior:none;
+  }
+  #game { display:block; width:100%; height:100%; touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------- 1. CANVAS ---------- */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const view = { w:0, h:0, dpr:1 };
+let bgGradient = null;
+
+/* ---------- 2. CONSTANTS ---------- */
+const CAP = 4;
+const SHAKE_DUR = 320;
+const COLORS = [
+  { key:'red',    hex:'#ff3b30' },
+  { key:'green',  hex:'#34c759' },
+  { key:'blue',   hex:'#0a84ff' },
+  { key:'yellow', hex:'#ffd60a' },
+  { key:'purple', hex:'#bf5af2' },
+  { key:'orange', hex:'#ff9f0a' },
+  { key:'cyan',   hex:'#40c8e0' },
+  { key:'pink',   hex:'#ff375f' },
+  { key:'lime',   hex:'#a3e635' }
+];
+/* Safer than Object.fromEntries — works everywhere */
+const HEX = {};
+COLORS.forEach(c => { HEX[c.key] = c.hex; });
+
+/* ---------- 3. STATE ---------- */
+let level = 1;
+let tubes = [];
+let initialTubes = [];
+let history = [];
+let selected = -1;
+let moves = 0;
+let won = false;
+let winProgress = 0;
+let anim = null;
+let shakeT = 0;
+let shakeIndex = -1;
+
+const layout = { tubes:[], undoBtn:null, resetBtn:null, nextBtn:null };
+
+/* ---------- 4. HELPERS ---------- */
+const cloneTubes = arr => arr.map(t => t.slice());
+
+function rr(c, x, y, w, h, r) {
+  if (typeof c.roundRect === 'function') { c.roundRect(x, y, w, h, r); return; }
+  r = Math.min(r, w/2, h/2);
+  c.moveTo(x+r, y);
+  c.arcTo(x+w, y,   x+w, y+h, r);
+  c.arcTo(x+w, y+h, x,   y+h, r);
+  c.arcTo(x,   y+h, x,   y,   r);
+  c.arcTo(x,   y,   x+w, y,   r);
+  c.closePath();
+}
+const easeInOutQuad = t => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2;
+function pointInRect(p, r) {
+  return !!r && p.x >= r.x && p.x <= r.x+r.w && p.y >= r.y && p.y <= r.y+r.h;
+}
+
+/* ---------- 5. LEVEL GEN ---------- */
+function colorsForLevel(lv) { return Math.min(4 + (lv-1), COLORS.length); }
+
+function shuffle(a) {
+  for (let i = a.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function isTriviallySorted(pool, nColors) {
+  for (let i = 0; i < nColors; i++) {
+    const s = i * CAP;
+    for (let k = 1; k < CAP; k++) if (pool[s+k] !== pool[s]) return false;
+  }
+  return true;
+}
+function generateTubes(lv) {
+  const nColors = colorsForLevel(lv);
+  const pool = [];
+  for (let i = 0; i < nColors; i++) for (let k = 0; k < CAP; k++) pool.push(COLORS[i].key);
+
+  let guard = 0;
+  do { shuffle(pool); } while (isTriviallySorted(pool, nColors) && ++guard < 40);
+
+  const out = [];
+  for (let i = 0; i < nColors; i++) out.push(pool.slice(i*CAP, i*CAP+CAP));
+  out.push([], []);
+  return out;
+}
+
+/* ---------- 6. LAYOUT ---------- */
+function computeLayout() {
+  const W = view.w, H = view.h;
+  if (W === 0 || H === 0) return;
+
+  const HUD_H = 72, PAD_X = 16, BOT_PAD = 26;
+  const areaTop = HUD_H + 6;
+  const areaH = H - areaTop - BOT_PAD;
+  const areaW = W - PAD_X*2;
+
+  const n = tubes.length;
+  const rows = n <= 5 ? 1 : 2;
+  const perRow = Math.ceil(n / rows);
+  const gapX = Math.max(9, Math.min(20, areaW*0.025));
+
+  const maxTubeW = (areaW - (perRow-1)*gapX) / perRow;
+  const rowH = areaH / rows;
+  const maxTubeH = rowH * 0.84;
+
+  let tw = Math.min(maxTubeW, maxTubeH/3.6, 92);
+  tw = Math.max(tw, 22);
+  const th = tw * 3.6;
+
+  layout.tubes = [];
+  for (let r = 0; r < rows; r++) {
+    const start = r*perRow;
+    const end = Math.min(start + perRow, n);
+    const count = end - start;
+    if (count <= 0) continue;
+    const totalW = count*tw + (count-1)*gapX;
+    const startX = (W - totalW)/2;
+    const centerY = areaTop + rowH*(r + 0.5);
+    const y = centerY - th/2;
+    for (let i = 0; i < count; i++) {
+      layout.tubes.push({ x: startX + i*(tw+gapX), y, w: tw, h: th });
+    }
+  }
+
+  const btnH = 34, btnW = 74, btnGap = 10;
+  const btnY = (HUD_H - btnH)/2 + 4;
+  layout.resetBtn = { x: W - PAD_X - btnW,           y: btnY, w: btnW, h: btnH, label:'RESET' };
+  layout.undoBtn  = { x: W - PAD_X - btnW*2 - btnGap, y: btnY, w: btnW, h: btnH, label:'UNDO'  };
+}
+
+/* ---------- 7. GAME LOGIC ---------- */
+function startLevel(lv) {
+  level = lv;
+  tubes = generateTubes(lv);
+  initialTubes = cloneTubes(tubes);
+  history = [];
+  selected = -1; anim = null; won = false; winProgress = 0; moves = 0;
+  shakeT = 0; shakeIndex = -1;
+  if (view.w > 0) computeLayout();
+}
+
+function topRunLength(tube) {
+  if (!tube.length) return 0;
+  const c = tube[tube.length-1];
+  let n = 1;
+  for (let i = tube.length-2; i >= 0; i--) { if (tube[i] === c) n++; else break; }
+  return n;
+}
+function isTubeComplete(t) {
+  if (t.length !== CAP) return false;
+  for (let i = 1; i < CAP; i++) if (t[i] !== t[0]) return false;
+  return true;
+}
+function canPour(src, dst) {
+  if (src === dst) return false;
+  const s = tubes[src], d = tubes[dst];
+  if (!s || !d) return false;
+  if (!s.length) return false;
+  if (d.length >= CAP) return false;
+  if (isTubeComplete(s)) return false;
+  if (!d.length) return true;
+  return d[d.length-1] === s[s.length-1];
+}
+function doPour(src, dst) {
+  const s = tubes[src], d = tubes[dst];
+  const color = s[s.length-1];
+  const amount = Math.min(topRunLength(s), CAP - d.length);
+  if (amount <= 0) return;
+
+  history.push({ tubes: cloneTubes(tubes), moves });
+  if (history.length > 120) history.shift();
+
+  for (let i = 0; i < amount; i++) s.pop();
+  for (let i = 0; i < amount; i++) d.push(color);
+  moves++;
+
+  anim = { from:src, to:dst, color, amount, elapsed:0, dur:380, p:0 };
+  playPour();
+}
+function isWin() {
+  for (const t of tubes) {
+    if (!t.length) continue;
+    if (t.length !== CAP) return false;
+    for (let i = 1; i < t.length; i++) if (t[i] !== t[0]) return false;
+  }
+  return true;
+}
+function checkWin() {
+  if (isWin()) { won = true; winProgress = 0; playWin(); }
+}
+function doUndo() {
+  if (won || anim) return;
+  if (!history.length) { buzz(); return; }
+  const snap = history.pop();
+  tubes = snap.tubes; moves = snap.moves; selected = -1; anim = null;
+  playSelect();
+}
+function doReset() {
+  if (anim) return;
+  tubes = cloneTubes(initialTubes);
+  history = []; selected = -1; won = false; winProgress = 0; moves = 0; shakeT = 0;
+  playSelect();
+}
+function nextLevel() { startLevel(level + 1); }
+
+/* ---------- 8. INPUT ---------- */
+let lastTouchTime = 0;
+
+function getPointerPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const p = (e.touches && e.touches[0]) ? e.touches[0]
+          : (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0]
+          : e;
+  return { x: p.clientX - rect.left, y: p.clientY - rect.top };
+}
+function tubeAtPoint(p) {
+  for (let i = 0; i < layout.tubes.length; i++) {
+    const r = layout.tubes[i];
+    if (p.x >= r.x-7 && p.x <= r.x+r.w+7 && p.y >= r.y-14 && p.y <= r.y+r.h+10) return i;
+  }
+  return -1;
+}
+function handleTap(p) {
+  initAudio();
+  if (won) {
+    if (pointInRect(p, layout.nextBtn)) nextLevel();
+    return;
+  }
+  if (anim) return;
+  if (pointInRect(p, layout.undoBtn))  { doUndo();  return; }
+  if (pointInRect(p, layout.resetBtn)) { doReset(); return; }
+
+  const idx = tubeAtPoint(p);
+  if (idx < 0) { selected = -1; return; }
+
+  if (selected === -1) {
+    if (!tubes[idx].length) return;
+    selected = idx; playSelect(); return;
+  }
+  if (selected === idx) { selected = -1; return; }
+
+  if (canPour(selected, idx)) {
+    doPour(selected, idx); selected = -1;
+  } else {
+    buzz();
+    shakeT = SHAKE_DUR; shakeIndex = idx;
+    selected = tubes[idx].length > 0 ? idx : -1;
+  }
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  lastTouchTime = Date.now();
+  handleTap(getPointerPos(e));
+}, { passive:false });
+
+canvas.addEventListener('mousedown', e => {
+  e.preventDefault();
+  if (Date.now() - lastTouchTime < 600) return;
+  handleTap(getPointerPos(e));
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+/* ---------- 9. AUDIO ---------- */
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) { try { audioCtx = new AC(); } catch(_) {} }
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+function tone(freq, dur, type='sine', vol=0.05, slideTo=null) {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, now);
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), now+dur);
+  g.gain.setValueAtTime(vol, now);
+  g.gain.exponentialRampToValueAtTime(0.0001, now+dur);
+  osc.connect(g); g.connect(audioCtx.destination);
+  osc.start(now); osc.stop(now+dur+0.02);
+}
+const playSelect = () => tone(760, 0.07, 'sine', 0.035);
+const playPour   = () => tone(620, 0.18, 'sine', 0.045, 250);
+const buzz       = () => tone(150, 0.15, 'square', 0.045, 110);
+function playWin() {
+  [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
+    setTimeout(() => tone(f, 0.24, 'sine', 0.06), i*110));
+}
+
+/* ---------- 10. RENDER ---------- */
+function getDisplay(i) {
+  const t = tubes[i];
+  if (!anim) return { colors: t, frac: 0, fracColor: null };
+
+  if (i === anim.from) {
+    /* FIXED: show all draining units properly */
+    const remaining = anim.amount * (1 - anim.p);
+    const full = Math.floor(remaining);
+    const frac = remaining - full;
+    return {
+      colors: t.concat(new Array(full).fill(anim.color)),
+      frac, fracColor: anim.color
+    };
+  }
+  if (i === anim.to) {
+    const shown = anim.amount * anim.p;
+    const full  = Math.floor(shown);
+    const base  = t.slice(0, t.length - anim.amount);
+    return {
+      colors: base.concat(new Array(full).fill(anim.color)),
+      frac: shown - full, fracColor: anim.color
+    };
+  }
+  return { colors: t, frac: 0, fracColor: null };
+}
+
+function drawHUD() {
+  const W = view.w;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '800 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('LEVEL ' + level, 16, 30);
+
+  ctx.fillStyle = 'rgba(180,200,225,0.65)';
+  ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('MOVES  ' + moves, 16, 52);
+
+  drawButton(layout.undoBtn, history.length > 0 && !won);
+  drawButton(layout.resetBtn, !won);
+}
+function drawButton(b, enabled) {
+  if (!b) return;
+  ctx.save();
+  ctx.beginPath(); rr(ctx, b.x, b.y, b.w, b.h, 11);
+  ctx.fillStyle = enabled ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = enabled ? 'rgba(160,210,255,0.45)' : 'rgba(255,255,255,0.14)';
+  ctx.stroke();
+  ctx.fillStyle = enabled ? '#dceaff' : 'rgba(220,234,255,0.32)';
+  ctx.font = '700 12.5px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 0.5);
+  ctx.restore();
+}
+
+function drawTube(i) {
+  const r = layout.tubes[i]; if (!r) return;
+  const disp = getDisplay(i);
+  const isSel = (selected === i) && !anim;
+
+  let ox = 0, oy = 0;
+  if (shakeT > 0 && shakeIndex === i) ox = Math.sin(shakeT*0.09)*9*(shakeT/SHAKE_DUR);
+  if (isSel) oy = -10;
+  if (anim && anim.from === i) oy = -Math.sin(anim.p*Math.PI)*r.h*0.10;
+
+  const x = r.x + ox, y = r.y + oy, w = r.w, h = r.h;
+  const radius = Math.min(w*0.34, 20);
+  const wall = Math.max(3, w*0.075);
+
+  ctx.beginPath(); rr(ctx, x, y, w, h, radius);
+  ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
+
+  ctx.save();
+  ctx.beginPath();
+  rr(ctx, x+wall, y+wall, w-2*wall, h-2*wall, Math.max(1, radius-wall));
+  ctx.clip();
+
+  const innerX = x + wall, innerW = w - 2*wall;
+  const innerBottom = y + h - wall;
+  const topGap = w * 0.09;
+  const unitH = (h - 2*wall - topGap) / CAP;
+
+  let cy = innerBottom;
+  for (let k = 0; k < disp.colors.length; k++) {
+    cy -= unitH;
+    ctx.fillStyle = HEX[disp.colors[k]] || '#888888';
+    ctx.fillRect(innerX, cy, innerW, unitH + 0.6);
+  }
+  if (disp.frac > 0.002 && disp.fracColor) {
+    const fh = unitH * Math.min(1, disp.frac);
+    ctx.fillStyle = HEX[disp.fracColor] || '#888888';
+    ctx.fillRect(innerX, cy - fh, innerW, fh + 0.6);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(innerX + innerW*0.12, y+wall, Math.max(3, innerW*0.14), h-2*wall);
+  ctx.restore();
+
+  ctx.beginPath(); rr(ctx, x, y, w, h, radius);
+  if (isSel) {
+    ctx.shadowColor = 'rgba(120,220,255,0.95)';
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 3; ctx.strokeStyle = '#8fe6ff';
+  } else {
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(200,225,255,0.48)';
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+}
+
+function drawStream() {
+  if (!anim) return;
+  const from = layout.tubes[anim.from], to = layout.tubes[anim.to];
+  if (!from || !to) return;
+  const liftFrom = -Math.sin(anim.p*Math.PI)*from.h*0.10;
+  const sx = from.x + from.w/2, sy = from.y + liftFrom + from.h*0.09;
+  const tx = to.x + to.w/2, ty = to.y + to.h*0.10;
+  const cx = (sx+tx)/2, cy = Math.min(sy, ty) - Math.max(50, from.h*0.35);
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(cx, cy, tx, ty);
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(6, from.w*0.45);
+  ctx.strokeStyle = HEX[anim.color] || '#ffffff';
+  ctx.globalAlpha = 0.92;
+  ctx.stroke(); ctx.restore();
+}
+
+function drawWinOverlay() {
+  const W = view.w, H = view.h, a = winProgress;
+  ctx.save();
+  ctx.globalAlpha = 0.80 * a;
+  ctx.fillStyle = '#050a14';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = a;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  const pop = 1 + (1-a)*0.18;
+  ctx.save(); ctx.translate(W/2, H/2 - 86); ctx.scale(pop, pop);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '800 30px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('LEVEL COMPLETE!', 0, 0);
+  ctx.restore();
+
+  ctx.fillStyle = 'rgba(190,215,240,0.8)';
+  ctx.font = '600 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('Level ' + level + ' solved in ' + moves + ' moves', W/2, H/2 - 40);
+
+  const bw = Math.min(240, W*0.66), bh = 56;
+  layout.nextBtn = { x:(W-bw)/2, y:H/2 + 6, w:bw, h:bh };
+
+  const g = ctx.createLinearGradient(0, layout.nextBtn.y, 0, layout.nextBtn.y + bh);
+  g.addColorStop(0, '#3ddc84'); g.addColorStop(1, '#1fae63');
+  ctx.beginPath(); rr(ctx, layout.nextBtn.x, layout.nextBtn.y, bw, bh, 16);
+  ctx.fillStyle = g; ctx.fill();
+  ctx.fillStyle = '#04220f';
+  ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('NEXT LEVEL', W/2, layout.nextBtn.y + bh/2 + 1);
+  ctx.restore();
+}
+
+function render() {
+  const W = view.w, H = view.h;
+  ctx.fillStyle = bgGradient || '#0b1220';
+  ctx.fillRect(0, 0, W, H);
+  drawHUD();
+  for (let i = 0; i < tubes.length; i++) drawTube(i);
+  drawStream();
+  if (won) drawWinOverlay();
+}
+
+/* ---------- 11. UPDATE / LOOP ---------- */
+function update(dt) {
+  if (anim) {
+    anim.elapsed += dt;
+    const raw = Math.min(1, anim.elapsed / anim.dur);
+    anim.p = easeInOutQuad(raw);
+    if (raw >= 1) { anim = null; checkWin(); }
+  }
+  if (shakeT > 0) {
+    shakeT = Math.max(0, shakeT - dt);
+    if (shakeT === 0) shakeIndex = -1;
+  }
+  if (won && winProgress < 1) winProgress = Math.min(1, winProgress + dt/320);
+}
+
+let lastTime = 0;
+function loop(now) {
+  const dt = lastTime ? Math.min(50, now - lastTime) : 16;
+  lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+/* ---------- 12. RESIZE / BOOT ---------- */
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  view.w = window.innerWidth  || document.documentElement.clientWidth  || 360;
+  view.h = window.innerHeight || document.documentElement.clientHeight || 640;
+  view.dpr = dpr;
+
+  canvas.width  = Math.max(1, Math.floor(view.w * dpr));
+  canvas.height = Math.max(1, Math.floor(view.h * dpr));
+  canvas.style.width  = view.w + 'px';
+  canvas.style.height = view.h + 'px';
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  bgGradient = ctx.createLinearGradient(0, 0, 0, view.h);
+  bgGradient.addColorStop(0,    '#182338');
+  bgGradient.addColorStop(0.55, '#0e1626');
+  bgGradient.addColorStop(1,    '#070c14');
+
+  computeLayout();
+}
+
+startLevel(1);
+resize();
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+requestAnimationFrame(loop);
+
+console.log('[WaterSort] Booted. Level 1, tubes =', tubes.length);
+
+})();
+</script>
+</body>
+</html>
