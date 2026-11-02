@@ -50,7 +50,14 @@ const HEX = {};
 COLORS.forEach(c => { HEX[c.key] = c.hex; });
 
 /* ---------- 3. STATE ---------- */
-let level = 1;
+/* Load saved progress on boot. Wrapped in try/catch because localStorage can
+   throw (private mode / blocked cookies / file:// in some browsers). */
+let level = (() => {
+  try {
+    const saved = parseInt(localStorage.getItem('watersort_level'), 10);
+    return (Number.isFinite(saved) && saved >= 1) ? saved : 1;
+  } catch (e) { return 1; }
+})();
 let tubes = [];
 let initialTubes = [];
 let history = [];
@@ -230,7 +237,11 @@ function doReset() {
   history = []; selected = -1; won = false; winProgress = 0; moves = 0; shakeT = 0;
   playSelect();
 }
-function nextLevel() { startLevel(level + 1); }
+function nextLevel() {
+  const nextLvl = level + 1;
+  try { localStorage.setItem('watersort_level', String(nextLvl)); } catch (e) {}
+  startLevel(nextLvl);
+}
 
 /* ---------- 8. INPUT ---------- */
 let lastTouchTime = 0;
@@ -326,7 +337,6 @@ function getDisplay(i) {
   if (!anim) return { colors: t, frac: 0, fracColor: null };
 
   if (i === anim.from) {
-    /* FIXED: show all draining units properly */
     const remaining = anim.amount * (1 - anim.p);
     const full = Math.floor(remaining);
     const frac = remaining - full;
@@ -537,13 +547,13 @@ function resize() {
   computeLayout();
 }
 
-startLevel(1);
+startLevel(level);
 resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 requestAnimationFrame(loop);
 
-console.log('[WaterSort] Booted. Level 1, tubes =', tubes.length);
+console.log('[WaterSort] Booted. Level ' + level + ', tubes =', tubes.length);
 
 })();
 </script>
