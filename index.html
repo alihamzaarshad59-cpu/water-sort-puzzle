@@ -36,6 +36,7 @@ let bgGradient = null;
 /* ---------- 2. CONSTANTS ---------- */
 const CAP = 4;
 const SHAKE_DUR = 320;
+const TOTAL_LEVELS = 100;
 const COLORS = [
   { key:'red',    hex:'#ff3b30' },
   { key:'green',  hex:'#34c759' },
@@ -60,6 +61,12 @@ let level = (() => {
     return (Number.isFinite(saved) && saved >= 1) ? saved : 1;
   } catch (e) { return 1; }
 })();
+
+let gameState = 'MENU';          // 'MENU', 'LEVELS', 'PLAYING'
+let mapScroll = 0;               // level map scroll offset
+let mapMaxScroll = 0;
+let mapAutoScroll = false;       // LEVELS kholte waqt current level par scroll
+
 let tubes = [];
 let initialTubes = [];
 let history = [];
@@ -72,6 +79,21 @@ let shakeT = 0;
 let shakeIndex = -1;
 
 const layout = { tubes:[], undoBtn:null, resetBtn:null, nextBtn:null };
+const ui = { playBtn:null, levelsBtn:null, backBtn:null, menuBtn:null, cells:[] };
+
+/* Saved progress = highest unlocked level */
+function getUnlocked() {
+  try {
+    const s = parseInt(localStorage.getItem('watersort_level'), 10);
+    return (Number.isFinite(s) && s >= 1) ? s : 1;
+  } catch (e) { return 1; }
+}
+function saveProgress() {
+  const nxt = level + 1;
+  if (nxt > getUnlocked()) {
+    try { localStorage.setItem('watersort_level', String(nxt)); } catch (e) {}
+  }
+}
 
 /* ---------- 4. HELPERS ---------- */
 const cloneTubes = arr => arr.map(t => t.slice());
@@ -224,7 +246,7 @@ function isWin() {
   return true;
 }
 function checkWin() {
-  if (isWin()) { won = true; winProgress = 0; playWin(); }
+  if (isWin()) { won = true; winProgress = 0; saveProgress(); playWin(); }
 }
 function doUndo() {
   if (won || anim) return;
@@ -240,14 +262,10 @@ function doReset() {
   playSelect();
 }
 function nextLevel() {
-  const nextLvl = level + 1;
-  try { localStorage.setItem('watersort_level', String(nextLvl)); } catch (e) {}
-  startLevel(nextLvl);
+  startLevel(level + 1);
 }
 
 /* ---------- 8. INPUT ---------- */
-let lastTouchTime = 0;
-
 function getPointerPos(e) {
   const rect = canvas.getBoundingClientRect();
   const p = (e.touches && e.touches[0]) ? e.touches[0]
@@ -264,8 +282,45 @@ function tubeAtPoint(p) {
 }
 function handleTap(p) {
   initAudio();
+
+  /* ---- MAIN MENU ---- */
+  if (gameState === 'MENU') {
+    if (pointInRect(p, ui.playBtn)) {
+      playSelect();
+      gameState = 'PLAYING';
+      startLevel(getUnlocked());          // continue from highest unlocked level
+    } else if (pointInRect(p, ui.levelsBtn)) {
+      playSelect();
+      gameState = 'LEVELS';
+      mapAutoScroll = true;
+    }
+    return;
+  }
+
+  /* ---- LEVEL MAP ---- */
+  if (gameState === 'LEVELS') {
+    if (pointInRect(p, ui.backBtn)) { playSelect(); gameState = 'MENU'; return; }
+    if (p.y < 76) return;                 // header ke neeche chhupe cells ignore
+    for (let i = 0; i < ui.cells.length; i++) {
+      if (pointInRect(p, ui.cells[i])) {
+        playSelect();
+        gameState = 'PLAYING';
+        startLevel(ui.cells[i].lv);
+        return;
+      }
+    }
+    return;
+  }
+
+  /* ---- PLAYING ---- */
   if (won) {
-    if (pointInRect(p, layout.nextBtn)) nextLevel();
+    if (pointInRect(p, layout.nextBtn)) { nextLevel(); return; }
+    if (pointInRect(p, ui.menuBtn))     { gameState = 'MENU'; return; }
+    return;
+  }
+  if (pointInRect(p, ui.backBtn)) {
+    anim = null; selected = -1;
+    gameState = 'MENU';
     return;
   }
   if (anim) return;
@@ -290,17 +345,38 @@ function handleTap(p) {
   }
 }
 
-canvas.addEventListener('touchstart', e => {
-  e.preventDefault();
-  lastTouchTime = Date.now();
-  handleTap(getPointerPos(e));
-}, { passive:false });
+/* Pointer events: LEVELS screen par drag = scroll, tap = select.
+   Baaki screens par tap foran register hota hai. */
+let ptr = null;
 
-canvas.addEventListener('mousedown', e => {
+canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
-  if (Date.now() - lastTouchTime < 600) return;
-  handleTap(getPointerPos(e));
+  const p = getPointerPos(e);
+  if (gameState === 'LEVELS') {
+    ptr = { startY:p.y, lastY:p.y, moved:false };
+  } else {
+    handleTap(p);
+  }
 });
+canvas.addEventListener('pointermove', e => {
+  if (!ptr) return;
+  const p = getPointerPos(e);
+  if (!ptr.moved && Math.abs(p.y - ptr.startY) > 8) ptr.moved = true;
+  if (ptr.moved) {
+    mapScroll = Math.max(0, Math.min(mapScroll - (p.y - ptr.lastY), mapMaxScroll));
+  }
+  ptr.lastY = p.y;
+});
+canvas.addEventListener('pointerup', e => {
+  if (ptr && !ptr.moved && gameState === 'LEVELS') handleTap(getPointerPos(e));
+  ptr = null;
+});
+canvas.addEventListener('pointercancel', () => { ptr = null; });
+canvas.addEventListener('wheel', e => {
+  if (gameState !== 'LEVELS') return;
+  e.preventDefault();
+  mapScroll = Math.max(0, Math.min(mapScroll + e.deltaY, mapMaxScroll));
+}, { passive:false });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 /* ---------- 9. AUDIO ---------- */
@@ -360,15 +436,14 @@ function getDisplay(i) {
 }
 
 function drawHUD() {
-  const W = view.w;
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#eaf2ff';
-  ctx.font = '800 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('LEVEL ' + level, 16, 30);
+  ctx.font = '800 18px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('LEVEL ' + level, 88, 30);
 
   ctx.fillStyle = 'rgba(180,200,225,0.65)';
   ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('MOVES  ' + moves, 16, 52);
+  ctx.fillText('MOVES  ' + moves, 88, 52);
 
   drawButton(layout.undoBtn, history.length > 0 && !won);
   drawButton(layout.resetBtn, !won);
@@ -481,8 +556,9 @@ function drawWinOverlay() {
   ctx.fillText('Level ' + level + ' solved in ' + moves + ' moves', W/2, H/2 - 40);
 
   const bw = Math.min(240, W*0.66), bh = 56;
-  layout.nextBtn = { x:(W-bw)/2, y:H/2 + 6, w:bw, h:bh };
 
+  /* NEXT LEVEL */
+  layout.nextBtn = { x:(W-bw)/2, y:H/2 + 6, w:bw, h:bh };
   const g = ctx.createLinearGradient(0, layout.nextBtn.y, 0, layout.nextBtn.y + bh);
   g.addColorStop(0, '#3ddc84'); g.addColorStop(1, '#1fae63');
   ctx.beginPath(); rr(ctx, layout.nextBtn.x, layout.nextBtn.y, bw, bh, 16);
@@ -490,17 +566,174 @@ function drawWinOverlay() {
   ctx.fillStyle = '#04220f';
   ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('NEXT LEVEL', W/2, layout.nextBtn.y + bh/2 + 1);
+
+  /* MENU */
+  ui.menuBtn = { x:(W-bw)/2, y:H/2 + 6 + bh + 14, w:bw, h:48 };
+  ctx.beginPath(); rr(ctx, ui.menuBtn.x, ui.menuBtn.y, bw, ui.menuBtn.h, 14);
+  ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
+  ctx.fillStyle = '#dceaff';
+  ctx.font = '700 15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('MENU', W/2, ui.menuBtn.y + ui.menuBtn.h/2 + 1);
+
   ctx.restore();
 }
 
-function render() {
+/* ----- Menu / Level map drawing ----- */
+function drawBigButton(b, label, c1, c2, textColor) {
+  const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+  g.addColorStop(0, c1); g.addColorStop(1, c2);
+  ctx.save();
+  ctx.beginPath(); rr(ctx, b.x, b.y, b.w, b.h, 18);
+  ctx.fillStyle = g; ctx.fill();
+  ctx.fillStyle = textColor;
+  ctx.font = '800 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, b.x + b.w/2, b.y + b.h/2 + 1);
+  ctx.restore();
+}
+
+function drawMainMenu() {
+  const W = view.w, H = view.h;
+  ctx.fillStyle = bgGradient || '#0b1220';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  /* Title */
+  ctx.save();
+  ctx.fillStyle = '#eaf2ff';
+  ctx.shadowColor = 'rgba(64,200,224,0.65)';
+  ctx.shadowBlur = 22;
+  ctx.font = '900 ' + Math.min(52, W*0.13) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('WATER SORT', W/2, H*0.20);
+  ctx.restore();
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(180,200,225,0.7)';
+  ctx.font = '700 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('P U Z Z L E', W/2, H*0.20 + Math.min(52, W*0.13)*0.75);
+
+  /* Decorative color dots */
+  const dotR = 9, dotGap = 12;
+  const rowW = COLORS.length*(dotR*2) + (COLORS.length-1)*dotGap;
+  let dx = (W - rowW)/2 + dotR;
+  for (let i = 0; i < COLORS.length; i++) {
+    ctx.beginPath(); ctx.arc(dx, H*0.31, dotR, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[i].hex; ctx.fill();
+    dx += dotR*2 + dotGap;
+  }
+
+  /* Buttons */
+  const bw = Math.min(260, W*0.7), bh = 60;
+  ui.playBtn   = { x:(W-bw)/2, y:H*0.44,         w:bw, h:bh };
+  ui.levelsBtn = { x:(W-bw)/2, y:H*0.44 + bh+18, w:bw, h:bh };
+  drawBigButton(ui.playBtn,   'PLAY',   '#3ddc84', '#1fae63', '#04220f');
+  drawBigButton(ui.levelsBtn, 'LEVELS', '#4aa8ff', '#2a78d6', '#04162e');
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(180,200,225,0.55)';
+  ctx.font = '600 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('Level ' + getUnlocked() + ' reached', W/2, H*0.44 + bh*2 + 52);
+}
+
+function drawLock(cx, cy, s) {
+  ctx.save();
+  ctx.strokeStyle = ctx.fillStyle = 'rgba(200,215,235,0.35)';
+  ctx.lineWidth = Math.max(2, s*0.12);
+  ctx.beginPath(); ctx.arc(cx, cy - s*0.12, s*0.2, Math.PI, 0); ctx.stroke();
+  ctx.beginPath(); rr(ctx, cx - s*0.3, cy - s*0.08, s*0.6, s*0.42, s*0.08); ctx.fill();
+  ctx.restore();
+}
+
+function drawLevelMap() {
+  const W = view.w, H = view.h;
+  ctx.fillStyle = bgGradient || '#0b1220';
+  ctx.fillRect(0, 0, W, H);
+
+  const unlocked = getUnlocked();
+  const cols = W >= 480 ? 5 : 4;
+  const padX = 20, gap = 12, headerH = 76;
+  const cell = Math.min(84, (W - padX*2 - (cols-1)*gap) / cols);
+  const gridW = cols*cell + (cols-1)*gap;
+  const startX = (W - gridW) / 2;
+  const rows = Math.ceil(TOTAL_LEVELS / cols);
+  const contentH = rows*(cell+gap) + 20;
+  const viewH = H - headerH;
+
+  mapMaxScroll = Math.max(0, contentH - viewH);
+  if (mapAutoScroll) {
+    const row = Math.floor((Math.min(unlocked, TOTAL_LEVELS) - 1) / cols);
+    mapScroll = row*(cell+gap) - viewH/2 + cell/2;
+    mapAutoScroll = false;
+  }
+  mapScroll = Math.max(0, Math.min(mapScroll, mapMaxScroll));
+
+  ui.cells = [];
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, headerH, W, viewH); ctx.clip();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  for (let i = 1; i <= TOTAL_LEVELS; i++) {
+    const r = Math.floor((i-1) / cols), c = (i-1) % cols;
+    const x = startX + c*(cell+gap);
+    const y = headerH + 10 + r*(cell+gap) - mapScroll;
+    if (y + cell < headerH || y > H) continue;
+
+    const open = i <= unlocked;
+    const current = i === unlocked;
+
+    ctx.beginPath(); rr(ctx, x, y, cell, cell, 16);
+    if (current)   ctx.fillStyle = '#3ddc84';
+    else if (open) ctx.fillStyle = 'rgba(74,168,255,0.22)';
+    else           ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = current ? '#8fffc0' : open ? 'rgba(143,230,255,0.55)' : 'rgba(255,255,255,0.12)';
+    ctx.stroke();
+
+    if (open) {
+      ctx.fillStyle = current ? '#04220f' : '#eaf2ff';
+      ctx.font = '800 ' + Math.round(cell*0.34) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(i), x + cell/2, y + cell/2 + 1);
+      ui.cells.push({ x, y, w:cell, h:cell, lv:i });
+    } else {
+      drawLock(x + cell/2, y + cell/2, cell*0.5);
+    }
+  }
+  ctx.restore();
+
+  /* Header (solid background over the grid) */
+  ctx.fillStyle = '#0e1626';
+  ctx.fillRect(0, 0, W, headerH);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '800 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('SELECT LEVEL', W/2, headerH/2);
+
+  ui.backBtn = { x:16, y:(headerH-38)/2, w:78, h:38, label:'BACK' };
+  drawButton(ui.backBtn, true);
+}
+
+function drawPlaying() {
   const W = view.w, H = view.h;
   ctx.fillStyle = bgGradient || '#0b1220';
   ctx.fillRect(0, 0, W, H);
   drawHUD();
+
+  ui.backBtn = { x:16, y:(72-34)/2 + 4, w:62, h:34, label:'MENU' };
+  drawButton(ui.backBtn, !won);
+
   for (let i = 0; i < tubes.length; i++) drawTube(i);
   drawStream();
   if (won) drawWinOverlay();
+}
+
+function render() {
+  if (gameState === 'MENU')        drawMainMenu();
+  else if (gameState === 'LEVELS') drawLevelMap();
+  else                             drawPlaying();
 }
 
 /* ---------- 11. UPDATE / LOOP ---------- */
@@ -549,13 +782,16 @@ function resize() {
   computeLayout();
 }
 
+/* Game ab MENU se start hota hai (gameState = 'MENU').
+   startLevel(level) isliye rakha hai ke tubes[] khali na rahe. */
+gameState = 'MENU';
 startLevel(level);
 resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 requestAnimationFrame(loop);
 
-console.log('[WaterSort] Booted. Level ' + level + ', tubes =', tubes.length);
+console.log('[WaterSort] Booted. Menu first. Unlocked level ' + getUnlocked());
 
 })();
 </script>
