@@ -157,6 +157,223 @@ function showToast(text, dur) {
   toast = { text: String(text), t: 0, dur: dur || 2200 };
 }
 
+/* ============================================================
+   4c. VECTOR ICON LIBRARY
+   All UI icons are DRAWN with the Canvas API instead of using
+   emoji characters. Emoji glyphs render as "tofu" boxes on
+   devices whose system font lacks them — these never will.
+   ============================================================ */
+
+/* ---- COIN ICON -------------------------------------------------
+   Golden circle + darker inner edge ring + bright face + highlight. */
+function drawCoinIcon(c, x, y, radius) {
+  if (!(radius > 0)) return;
+  c.save();
+  c.shadowBlur = 0; c.shadowColor = 'transparent';
+  c.lineJoin = 'round';
+
+  /* 1. outer golden disc */
+  const g = c.createRadialGradient(
+    x - radius * 0.35, y - radius * 0.40, radius * 0.12,
+    x, y, radius
+  );
+  g.addColorStop(0,   '#fff6bb');
+  g.addColorStop(0.55,'#ffd60a');
+  g.addColorStop(1,   '#e0a200');
+  c.beginPath();
+  c.arc(x, y, radius, 0, Math.PI * 2);
+  c.fillStyle = g;
+  c.fill();
+
+  /* 2. darker inner circle -> looks like the raised coin edge */
+  c.beginPath();
+  c.arc(x, y, radius * 0.78, 0, Math.PI * 2);
+  c.fillStyle = '#c98700';
+  c.fill();
+
+  /* 3. bright inner face */
+  c.beginPath();
+  c.arc(x, y, radius * 0.60, 0, Math.PI * 2);
+  c.fillStyle = '#ffd94a';
+  c.fill();
+
+  /* 4. subtle white highlight (upper-left crescent) */
+  c.beginPath();
+  c.arc(x, y, radius * 0.78, Math.PI * 1.02, Math.PI * 1.48);
+  c.lineWidth = Math.max(1, radius * 0.16);
+  c.lineCap = 'round';
+  c.strokeStyle = 'rgba(255,255,255,0.55)';
+  c.stroke();
+
+  /* 5. crisp outer rim */
+  c.beginPath();
+  c.arc(x, y, radius - Math.max(0.5, radius * 0.06), 0, Math.PI * 2);
+  c.lineWidth = Math.max(1, radius * 0.12);
+  c.strokeStyle = 'rgba(255,246,180,0.75)';
+  c.stroke();
+
+  c.restore();
+}
+
+/* ---- HINT ICON (light bulb) -------------------------------------
+   Yellow bulb + grey base + radiating rays. */
+function drawHintIcon(c, x, y, size) {
+  if (!(size > 0)) return;
+  const s = size;
+  const R = s * 0.26;              // bulb radius
+  const cy = y - s * 0.10;         // bulb centre (lifted to leave room for base)
+
+  c.save();
+  c.shadowBlur = 0; c.shadowColor = 'transparent';
+  c.lineCap = 'round';
+
+  /* rays */
+  c.strokeStyle = '#ffd60a';
+  c.lineWidth = Math.max(1.1, s * 0.075);
+  const rIn = R * 1.36, rOut = R * 1.90;
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + (i - 2) * (Math.PI / 5);
+    c.beginPath();
+    c.moveTo(x + Math.cos(a) * rIn,  cy + Math.sin(a) * rIn);
+    c.lineTo(x + Math.cos(a) * rOut, cy + Math.sin(a) * rOut);
+    c.stroke();
+  }
+
+  /* bulb */
+  const g = c.createRadialGradient(
+    x - R * 0.32, cy - R * 0.36, R * 0.12,
+    x, cy, R
+  );
+  g.addColorStop(0, '#fffbd0');
+  g.addColorStop(1, '#ffd60a');
+  c.beginPath();
+  c.arc(x, cy, R, 0, Math.PI * 2);
+  c.fillStyle = g;
+  c.fill();
+  c.lineWidth = Math.max(1, s * 0.045);
+  c.strokeStyle = 'rgba(190,140,0,0.55)';
+  c.stroke();
+
+  /* grey base */
+  const bw = R * 1.12, bh = R * 0.80;
+  const bx = x - bw / 2, by = cy + R * 0.82;
+  c.beginPath();
+  rr(c, bx, by, bw, bh, Math.min(bh * 0.35, 2.5));
+  c.fillStyle = '#9aa7b8';
+  c.fill();
+  /* base thread line */
+  c.beginPath();
+  c.moveTo(bx + bw * 0.14, by + bh * 0.55);
+  c.lineTo(bx + bw * 0.86, by + bh * 0.55);
+  c.lineWidth = Math.max(1, s * 0.05);
+  c.strokeStyle = 'rgba(90,102,118,0.85)';
+  c.stroke();
+
+  c.restore();
+}
+
+/* ---- EXTRA TUBE ICON --------------------------------------------
+   Rounded-rect tube with liquid + bright green plus beside it. */
+function drawTubeIcon(c, x, y, size) {
+  if (!(size > 0)) return;
+  const s = size;
+  const tw = s * 0.42;             // tube width
+  const th = s * 0.84;             // tube height
+  const tcx = x - s * 0.26;        // tube centre-x (pushed left)
+  const tx = tcx - tw / 2, ty = y - th / 2;
+  const trad = Math.min(tw * 0.46, th * 0.22);
+
+  c.save();
+  c.shadowBlur = 0; c.shadowColor = 'transparent';
+
+  /* glass body */
+  c.beginPath();
+  rr(c, tx, ty, tw, th, trad);
+  c.fillStyle = 'rgba(160,220,255,0.16)';
+  c.fill();
+
+  /* liquid inside (clipped) */
+  c.save();
+  c.beginPath();
+  rr(c, tx, ty, tw, th, trad);
+  c.clip();
+  c.fillStyle = 'rgba(90,195,255,0.80)';
+  c.fillRect(tx, ty + th * 0.50, tw, th * 0.50);
+  /* shine */
+  c.fillStyle = 'rgba(255,255,255,0.20)';
+  c.fillRect(tx + tw * 0.16, ty + th * 0.10, tw * 0.16, th * 0.80);
+  c.restore();
+
+  /* outline */
+  c.beginPath();
+  rr(c, tx, ty, tw, th, trad);
+  c.lineWidth = Math.max(1.1, s * 0.065);
+  c.strokeStyle = '#a9dcff';
+  c.stroke();
+
+  /* bright green plus */
+  const px = x + s * 0.26, py = y;
+  const arm = s * 0.27, thick = s * 0.155;
+  c.fillStyle = '#3ddc84';
+  c.beginPath();
+  rr(c, px - arm, py - thick / 2, arm * 2, thick, thick / 2);
+  c.fill();
+  c.beginPath();
+  rr(c, px - thick / 2, py - arm, thick, arm * 2, thick / 2);
+  c.fill();
+
+  c.restore();
+}
+
+/* ---- MUSIC ICON ------------------------------------------------
+   Speaker (box + cone) with sound waves, or a red slash when muted. */
+function drawMusicIcon(c, x, y, size, isEnabled) {
+  if (!(size > 0)) return;
+  const s = size;
+
+  c.save();
+  c.shadowBlur = 0; c.shadowColor = 'transparent';
+  c.lineJoin = 'round';
+  c.lineCap = 'round';
+
+  const bodyCol = isEnabled ? '#dceaff' : 'rgba(220,234,255,0.42)';
+
+  /* speaker: small box on the left + cone (triangle) opening right */
+  c.beginPath();
+  c.moveTo(x - s * 0.46, y - s * 0.15);
+  c.lineTo(x - s * 0.24, y - s * 0.15);
+  c.lineTo(x - s * 0.02, y - s * 0.40);
+  c.lineTo(x - s * 0.02, y + s * 0.40);
+  c.lineTo(x - s * 0.24, y + s * 0.15);
+  c.lineTo(x - s * 0.46, y + s * 0.15);
+  c.closePath();
+  c.fillStyle = bodyCol;
+  c.fill();
+
+  if (isEnabled) {
+    /* sound waves */
+    const cx = x - s * 0.02;
+    c.strokeStyle = '#dceaff';
+    c.lineWidth = Math.max(1.1, s * 0.075);
+    const radii = [s * 0.18, s * 0.31, s * 0.44];
+    for (let i = 0; i < radii.length; i++) {
+      c.beginPath();
+      c.arc(cx, y, radii[i], -Math.PI * 0.28, Math.PI * 0.28);
+      c.stroke();
+    }
+  } else {
+    /* mute slash */
+    c.beginPath();
+    c.moveTo(x - s * 0.44, y + s * 0.38);
+    c.lineTo(x + s * 0.42, y - s * 0.38);
+    c.lineWidth = Math.max(2, s * 0.13);
+    c.strokeStyle = '#ff453a';
+    c.stroke();
+  }
+
+  c.restore();
+}
+
 /* ---------- 5. LEVEL GEN ---------- */
 function colorsForLevel(lv) { return Math.min(4 + (lv-1), COLORS.length); }
 
@@ -233,7 +450,7 @@ function computeLayout() {
   layout.resetBtn = { x: layout.musicBtn.x - btnGap - btnW,            y: btnY, w: btnW,   h: btnH, label:'RESET' };
   layout.undoBtn  = { x: layout.resetBtn.x - btnGap - btnW,            y: btnY, w: btnW,   h: btnH, label:'UNDO'  };
 
-  /* Bottom action bar: [🪙 coins] [💡 HINT] [➕ TUBE] — centered */
+  /* Bottom action bar: [coins] [HINT] [TUBE] — centered */
   const barH = 46, barGap = 8, barPad = 16, coinW = 78;
   const barY = H - 20 - barH;
   let bw = (W - barPad*2 - coinW - barGap*2) / 2;
@@ -383,7 +600,7 @@ function useHint() {
   if (hint) { showToast('Hint already showing!'); return; }
   if (coins < HINT_COST) {
     buzz();
-    showToast('Not enough coins! Need ' + HINT_COST + ' 🪙');
+    showToast('Not enough coins! Need ' + HINT_COST);
     return;
   }
   const h = findHint();
@@ -397,7 +614,7 @@ function useHint() {
   hint = { src: h.src, dst: h.dst, t: 2000 };
   playSelect();
   vibrate(15);
-  showToast('💡 Pour from tube ' + (h.src + 1) + ' → tube ' + (h.dst + 1), 2400);
+  showToast('Pour from tube ' + (h.src + 1) + ' to tube ' + (h.dst + 1), 2400);
 }
 
 function buyExtraTube() {
@@ -409,7 +626,7 @@ function buyExtraTube() {
   }
   if (coins < TUBE_COST) {
     buzz();
-    showToast('Not enough coins! Need ' + TUBE_COST + ' 🪙');
+    showToast('Not enough coins! Need ' + TUBE_COST);
     return;
   }
   coins -= TUBE_COST;
@@ -422,7 +639,7 @@ function buyExtraTube() {
   computeLayout();
   playSelect();
   vibrate(25);
-  showToast('➕ Extra tube added!');
+  showToast('Extra tube added!');
 }
 
 /* ---------- 7b. PARTICLES (confetti + bubbles) ---------- */
@@ -809,7 +1026,7 @@ function getDisplay(i) {
   return { colors: t, frac: 0, fracColor: null };
 }
 
-/* ----- Coin pill widget (menu + playing bar) ----- */
+/* ----- Coin pill widget (menu + playing bar) — vector coin icon ----- */
 function drawCoinPill(x, y, w, h) {
   ctx.save();
   ctx.beginPath(); rr(ctx, x, y, w, h, 14);
@@ -819,21 +1036,22 @@ function drawCoinPill(x, y, w, h) {
   ctx.strokeStyle = 'rgba(255,214,10,0.42)';
   ctx.stroke();
 
-  const iconSize = Math.round(h*0.42);
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.font = iconSize + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",system-ui,sans-serif';
-  ctx.fillText('🪙', x + 9, y + h/2 + 1);
+  const r = Math.min(h*0.215, 11);
+  const iconCX = x + 9 + r;
+  drawCoinIcon(ctx, iconCX, y + h/2, r);
 
   const numSize = Math.round(h*0.36);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.font = '800 ' + numSize + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   const tw = ctx.measureText(String(coins)).width;
   ctx.fillStyle = '#ffe066';
-  ctx.fillText(String(coins), Math.max(x + 9 + iconSize + 4, x + w - 10 - tw), y + h/2 + 1);
+  ctx.fillText(String(coins), Math.max(iconCX + r + 5, x + w - 10 - tw), y + h/2 + 1);
   ctx.restore();
 }
 
-/* ----- Bottom-bar button (HINT / EXTRA TUBE) ----- */
-function drawBarButton(b, label, sub, enabled, affordable) {
+/* ----- Bottom-bar button (HINT / EXTRA TUBE) — vector icons ----- */
+/* iconType: 'hint' | 'tube' */
+function drawBarButton(b, iconType, label, sub, enabled, affordable) {
   if (!b) return;
   ctx.save();
   ctx.beginPath(); rr(ctx, b.x, b.y, b.w, b.h, 14);
@@ -843,15 +1061,46 @@ function drawBarButton(b, label, sub, enabled, affordable) {
   ctx.strokeStyle = enabled ? 'rgba(160,210,255,0.45)' : 'rgba(255,255,255,0.12)';
   ctx.stroke();
 
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const cx = b.x + b.w / 2;
   const fs = Math.max(10, Math.min(13.5, b.w * 0.115));
-  ctx.fillStyle = enabled ? '#dceaff' : 'rgba(220,234,255,0.30)';
-  ctx.font = '800 ' + fs.toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText(label, b.x + b.w/2, b.y + b.h/2 - 7.5);
 
+  /* ---- line 1 : icon + label (drawn as one centered group) ---- */
+  const font1 = '800 ' + fs.toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.font = font1;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  const labelW = ctx.measureText(label).width;
+  const icoS  = fs * 1.45;
+  const gap1  = fs * 0.32;
+  const line1W = icoS + gap1 + labelW;
+  const l1x = cx - line1W / 2;
+  const l1y = b.y + b.h/2 - 7.5;
+
+  if (iconType === 'hint')      drawHintIcon(ctx, l1x + icoS/2, l1y, icoS);
+  else if (iconType === 'tube') drawTubeIcon(ctx, l1x + icoS/2, l1y, icoS);
+
+  ctx.font = font1;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = enabled ? '#dceaff' : 'rgba(220,234,255,0.30)';
+  ctx.fillText(label, l1x + icoS + gap1, l1y);
+
+  /* ---- line 2 : coin icon + cost (centered group) ---- */
+  const fs2 = fs * 0.82;
+  const font2 = '700 ' + fs2.toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.font = font2;
+  const subW  = ctx.measureText(sub).width;
+  const coinR = fs2 * 0.62;
+  const gap2  = fs2 * 0.36;
+  const line2W = coinR*2 + gap2 + subW;
+  const l2x = cx - line2W / 2;
+  const l2y = b.y + b.h/2 + 9.5;
+
+  drawCoinIcon(ctx, l2x + coinR, l2y, coinR);
+
+  ctx.font = font2;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = affordable ? 'rgba(255,224,102,0.92)' : 'rgba(255,224,102,0.34)';
-  ctx.font = '700 ' + (fs*0.82).toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('🪙 ' + sub, b.x + b.w/2, b.y + b.h/2 + 9.5);
+  ctx.fillText(sub, l2x + coinR*2 + gap2, l2y);
+
   ctx.restore();
 }
 
@@ -884,6 +1133,8 @@ function drawButton(b, enabled) {
   ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 0.5);
   ctx.restore();
 }
+
+/* Music toggle — vector speaker icon (no emoji) */
 function drawMusicBtn(b) {
   if (!b) return;
   ctx.save();
@@ -893,9 +1144,10 @@ function drawMusicBtn(b) {
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = musicEnabled ? 'rgba(160,210,255,0.45)' : 'rgba(255,255,255,0.14)';
   ctx.stroke();
-  ctx.font = Math.round(b.h*0.5) + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(musicEnabled ? '🔊' : '🔇', b.x + b.w/2, b.y + b.h/2 + 1);
+
+  const iconSize = Math.min(b.w, b.h) * 0.62;
+  drawMusicIcon(ctx, b.x + b.w/2, b.y + b.h/2, iconSize, musicEnabled);
+
   ctx.restore();
 }
 
@@ -1006,17 +1258,33 @@ function drawWinOverlay() {
   ctx.font = '600 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('Level ' + level + ' solved in ' + moves + ' moves', W/2, H/2 - 58);
 
-  /* FEATURE 1 — floating "+10 Coins" */
+  /* FEATURE 1 — floating "+10 COINS" with a VECTOR coin icon */
   ctx.save();
   const cA = Math.min(1, coinRewardT * 2.4);
   ctx.globalAlpha = a * Math.max(0, Math.min(1, cA));
   const rise = easeInOutQuad(Math.min(1, coinRewardT)) * 12;
+  const rewardY = H/2 - 26 - rise;
+  const rewardText = '+' + WIN_COINS + ' COINS';
+
+  ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const rtw = ctx.measureText(rewardText).width;
+  const rIconR = 8, rGap = 7;
+  const rTotal = rtw + rGap + rIconR * 2;
+  const rStart = W/2 - rTotal / 2;
+
   ctx.fillStyle = '#ffd60a';
   ctx.shadowColor = 'rgba(255,214,10,0.85)';
   ctx.shadowBlur = 16;
-  ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('+' + WIN_COINS + ' COINS 🪙', W/2, H/2 - 26 - rise);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(rewardText, rStart, rewardY);
+
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+  drawCoinIcon(ctx, rStart + rtw + rGap + rIconR, rewardY, rIconR);
   ctx.restore();
+
+  /* restore centered alignment for the remaining labels */
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.globalAlpha = a;
 
   const bw = Math.min(240, W*0.66), bh = 56;
 
@@ -1198,10 +1466,10 @@ function drawPlaying() {
   for (let i = 0; i < tubes.length; i++) drawTube(i);
   drawStream();
 
-  /* FEATURE 1 / 2 / 3 — bottom action bar */
+  /* FEATURE 1 / 2 / 3 — bottom action bar (all vector icons) */
   if (layout.coinBar) drawCoinPill(layout.coinBar.x, layout.coinBar.y, layout.coinBar.w, layout.coinBar.h);
-  drawBarButton(layout.hintBtn,  '💡 HINT', String(HINT_COST), !won, coins >= HINT_COST);
-  drawBarButton(layout.extraBtn, '➕ TUBE', String(TUBE_COST), !won && tubes.length < MAX_TUBES, coins >= TUBE_COST);
+  drawBarButton(layout.hintBtn,  'hint', 'HINT', String(HINT_COST), !won, coins >= HINT_COST);
+  drawBarButton(layout.extraBtn, 'tube', 'TUBE', String(TUBE_COST), !won && tubes.length < MAX_TUBES, coins >= TUBE_COST);
 
   if (won) drawWinOverlay();
 }
