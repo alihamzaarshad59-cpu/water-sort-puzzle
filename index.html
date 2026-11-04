@@ -37,6 +37,11 @@ let bgGradient = null;
 const CAP = 4;
 const SHAKE_DUR = 320;
 const TOTAL_LEVELS = 100;
+const HINT_COST = 50;
+const TUBE_COST = 100;
+const MAX_TUBES = 10;
+const WIN_COINS = 10;
+
 const COLORS = [
   { key:'red',    hex:'#ff3b30' },
   { key:'green',  hex:'#34c759' },
@@ -70,6 +75,17 @@ let musicEnabled = (() => {
   } catch (e) { return true; }
 })();
 
+/* ---------- 3b. COINS ---------- */
+let coins = (() => {
+  try {
+    const v = parseInt(localStorage.getItem('watersort_coins'), 10);
+    return (Number.isFinite(v) && v >= 0) ? v : 0;
+  } catch (e) { return 0; }
+})();
+function saveCoins() {
+  try { localStorage.setItem('watersort_coins', String(coins)); } catch (e) {}
+}
+
 let gameState = 'MENU';          // 'MENU', 'LEVELS', 'PLAYING'
 let mapScroll = 0;               // level map scroll offset
 let mapMaxScroll = 0;
@@ -85,9 +101,16 @@ let winProgress = 0;
 let anim = null;
 let shakeT = 0;
 let shakeIndex = -1;
-let particles = [];              // confetti particles
+let particles = [];              // confetti + bubble particles
 
-const layout = { tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, musicBtn:null };
+let hint = null;                 // { src, dst, t }  -> highlight for 2s
+let toast = null;                // { text, t, dur } -> small message popup
+let coinRewardT = 0;             // animation timer for "+10 COINS" on win screen
+
+const layout = {
+  tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, musicBtn:null,
+  coinBar:null, hintBtn:null, extraBtn:null
+};
 const ui = { playBtn:null, levelsBtn:null, backBtn:null, menuBtn:null, musicBtn:null, cells:[] };
 
 /* Saved progress = highest unlocked level */
@@ -129,6 +152,11 @@ function vibrate(pattern) {
   }
 }
 
+/* ---------- 4b. TOAST ---------- */
+function showToast(text, dur) {
+  toast = { text: String(text), t: 0, dur: dur || 2200 };
+}
+
 /* ---------- 5. LEVEL GEN ---------- */
 function colorsForLevel(lv) { return Math.min(4 + (lv-1), COLORS.length); }
 
@@ -165,7 +193,7 @@ function computeLayout() {
   const W = view.w, H = view.h;
   if (W === 0 || H === 0) return;
 
-  const HUD_H = 72, PAD_X = 16, BOT_PAD = 26;
+  const HUD_H = 72, PAD_X = 16, BOT_PAD = 88;
   const areaTop = HUD_H + 6;
   const areaH = H - areaTop - BOT_PAD;
   const areaW = W - PAD_X*2;
@@ -204,6 +232,18 @@ function computeLayout() {
   layout.musicBtn = { x: W - hudPad - musicW,                          y: btnY, w: musicW, h: btnH };
   layout.resetBtn = { x: layout.musicBtn.x - btnGap - btnW,            y: btnY, w: btnW,   h: btnH, label:'RESET' };
   layout.undoBtn  = { x: layout.resetBtn.x - btnGap - btnW,            y: btnY, w: btnW,   h: btnH, label:'UNDO'  };
+
+  /* Bottom action bar: [🪙 coins] [💡 HINT] [➕ TUBE] — centered */
+  const barH = 46, barGap = 8, barPad = 16, coinW = 78;
+  const barY = H - 20 - barH;
+  let bw = (W - barPad*2 - coinW - barGap*2) / 2;
+  bw = Math.max(62, Math.min(170, bw));
+  const totalW = coinW + bw*2 + barGap*2;
+  const startX = (W - totalW) / 2;
+
+  layout.coinBar  = { x: startX, y: barY, w: coinW, h: barH };
+  layout.hintBtn  = { x: startX + coinW + barGap,                     y: barY, w: bw, h: barH };
+  layout.extraBtn = { x: startX + coinW + barGap + bw + barGap,       y: barY, w: bw, h: barH };
 }
 
 /* ---------- 7. GAME LOGIC ---------- */
@@ -215,6 +255,9 @@ function startLevel(lv) {
   selected = -1; anim = null; won = false; winProgress = 0; moves = 0;
   shakeT = 0; shakeIndex = -1;
   particles = [];
+  hint = null;
+  toast = null;
+  coinRewardT = 0;
   if (view.w > 0) computeLayout();
 }
 
@@ -256,6 +299,11 @@ function doPour(src, dst) {
   anim = { from:src, to:dst, color, amount, elapsed:0, dur:380, p:0 };
   playPour();
   vibrate(20);                                   // valid pour
+
+  /* FEATURE 4 — water bubbles pop at the destination tube */
+  spawnBubbles(dst, color);
+
+  hint = null;                                   // hint used up / stale
 }
 function isWin() {
   for (const t of tubes) {
@@ -266,10 +314,17 @@ function isWin() {
   return true;
 }
 function checkWin() {
+  if (won) return;
   if (isWin()) {
-    won = true; winProgress = 0; saveProgress(); playWin();
+    won = true; winProgress = 0; coinRewardT = 0;
+    saveProgress();
+    playWin();
     spawnConfetti();
     vibrate([100, 50, 100, 50, 300]);            // celebration pattern
+
+    /* FEATURE 1 — reward coins */
+    coins += WIN_COINS;
+    saveCoins();
   }
 }
 function doUndo() {
@@ -277,6 +332,8 @@ function doUndo() {
   if (!history.length) { buzz(); return; }
   const snap = history.pop();
   tubes = snap.tubes; moves = snap.moves; selected = -1; anim = null;
+  hint = null;
+  if (layout.tubes.length !== tubes.length) computeLayout();
   playSelect();
 }
 function doReset() {
@@ -284,13 +341,91 @@ function doReset() {
   tubes = cloneTubes(initialTubes);
   history = []; selected = -1; won = false; winProgress = 0; moves = 0; shakeT = 0;
   particles = [];
+  hint = null; coinRewardT = 0;
+  if (layout.tubes.length !== tubes.length) computeLayout();
   playSelect();
 }
 function nextLevel() {
   startLevel(level + 1);
 }
 
-/* ---------- 7b. CONFETTI ---------- */
+/* ---------- 7a. HINT + EXTRA TUBE ---------- */
+/* Find the most useful valid move. Prefers:
+   - pouring onto a matching (non-empty) tube
+   - moves that complete a tube
+   - moves that empty a tube completely
+   Never suggests moving a whole single-color tube into an empty tube (pointless). */
+function findHint() {
+  let best = null;
+  for (let i = 0; i < tubes.length; i++) {
+    const run = topRunLength(tubes[i]);
+    if (run === 0) continue;
+    const wouldEmpty = (run === tubes[i].length);
+    for (let j = 0; j < tubes.length; j++) {
+      if (!canPour(i, j)) continue;
+      const dstLen = tubes[j].length;
+      if (dstLen === 0 && wouldEmpty) continue;      // pointless shuffle
+
+      let score = 0;
+      if (dstLen > 0) score += 10;                   // merging onto same color
+      if (dstLen + run === CAP) score += 6;          // completes the destination
+      if (wouldEmpty) score += 3;                    // frees up a tube
+      if (tubes[i].length === CAP) score += 1;       // partially dug out of a full tube
+
+      if (!best || score > best.score) best = { src:i, dst:j, score };
+    }
+  }
+  return best;
+}
+
+function useHint() {
+  if (won || anim) return;
+  if (hint) { showToast('Hint already showing!'); return; }
+  if (coins < HINT_COST) {
+    buzz();
+    showToast('Not enough coins! Need ' + HINT_COST + ' 🪙');
+    return;
+  }
+  const h = findHint();
+  if (!h) {
+    buzz();
+    showToast('No moves left! Try adding a tube or resetting.', 2800);
+    return;
+  }
+  coins -= HINT_COST;
+  saveCoins();
+  hint = { src: h.src, dst: h.dst, t: 2000 };
+  playSelect();
+  vibrate(15);
+  showToast('💡 Pour from tube ' + (h.src + 1) + ' → tube ' + (h.dst + 1), 2400);
+}
+
+function buyExtraTube() {
+  if (won || anim) return;
+  if (tubes.length >= MAX_TUBES) {
+    buzz();
+    showToast('Maximum ' + MAX_TUBES + ' tubes reached!');
+    return;
+  }
+  if (coins < TUBE_COST) {
+    buzz();
+    showToast('Not enough coins! Need ' + TUBE_COST + ' 🪙');
+    return;
+  }
+  coins -= TUBE_COST;
+  saveCoins();
+
+  tubes.push([]);
+  initialTubes.push([]);          // keep the purchase across RESET
+  history = [];                   // old snapshots would not include the new tube
+  hint = null;
+  computeLayout();
+  playSelect();
+  vibrate(25);
+  showToast('➕ Extra tube added!');
+}
+
+/* ---------- 7b. PARTICLES (confetti + bubbles) ---------- */
 const CONFETTI_COLORS = COLORS.map(c => c.hex).concat(['#ffffff', '#ffd700', '#ff69b4']);
 
 function spawnConfetti() {
@@ -315,11 +450,47 @@ function spawnConfetti() {
   }
 }
 
+/* FEATURE 4 — water bubbles */
+function spawnBubbles(tubeIdx, colorKey) {
+  const r = layout.tubes[tubeIdx];
+  if (!r) return;
+  const n = 5 + Math.floor(Math.random() * 6);          // 5–10 bubbles
+  const cx = r.x + r.w/2;
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      bubble: true,
+      x: cx + (Math.random() - 0.5) * r.w * 0.72,
+      y: r.y + r.h * 0.14 + Math.random() * r.h * 0.18,
+      vx: (Math.random() - 0.5) * 46,
+      vy: -(34 + Math.random() * 62),
+      size: 2.2 + Math.random() * 3.6,
+      color: HEX[colorKey] || '#8fe6ff',
+      life: 0,
+      maxLife: 0.55 + Math.random() * 0.55,
+      wob: Math.random() * Math.PI * 2,
+      wobV: 4 + Math.random() * 5
+    });
+  }
+}
+
 function updateParticles(dt) {
   if (!particles.length) return;
   const s = dt / 1000, H = view.h;
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
+
+    /* ---- bubbles: float up, wobble, pop ---- */
+    if (p.bubble) {
+      p.life += s;
+      p.wob += p.wobV * s;
+      p.x += (p.vx + Math.sin(p.wob) * 26) * s;
+      p.y += p.vy * s;
+      p.vy *= Math.max(0, 1 - 1.6 * s);      // slow down as it rises
+      if (p.life >= p.maxLife || p.y < -20) particles.splice(i, 1);
+      continue;
+    }
+
+    /* ---- confetti: falls down ---- */
     p.vy += 330 * s;                         // gravity
     if (p.vy > 420) p.vy = 420;              // terminal velocity (paper-like)
     p.sway += p.swayV * s;
@@ -336,6 +507,30 @@ function drawParticles() {
   ctx.save();
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];
+
+    /* ---- bubbles ---- */
+    if (p.bubble) {
+      const fade = 1 - Math.max(0, (p.life - p.maxLife*0.55) / (p.maxLife*0.45));
+      const a = Math.max(0, Math.min(1, fade));
+      if (a <= 0.01) continue;
+      ctx.save();
+      ctx.globalAlpha = a * 0.92;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.fill();
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = p.color;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(p.x - p.size*0.30, p.y - p.size*0.30, p.size*0.32, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.65)';
+      ctx.fill();
+      ctx.restore();
+      continue;
+    }
+
+    /* ---- confetti ---- */
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.rot);
@@ -410,17 +605,21 @@ function handleTap(p) {
   if (pointInRect(p, layout.musicBtn)) { toggleMusic(); return; }
   if (won) {
     if (pointInRect(p, layout.nextBtn)) { nextLevel(); return; }
-    if (pointInRect(p, ui.menuBtn))     { particles = []; gameState = 'MENU'; return; }
+    if (pointInRect(p, ui.menuBtn))     { particles = []; toast = null; gameState = 'MENU'; return; }
     return;
   }
   if (pointInRect(p, ui.backBtn)) {
-    anim = null; selected = -1;
+    anim = null; selected = -1; hint = null; toast = null;
     gameState = 'MENU';
     return;
   }
   if (anim) return;
   if (pointInRect(p, layout.undoBtn))  { doUndo();  return; }
   if (pointInRect(p, layout.resetBtn)) { doReset(); return; }
+
+  /* FEATURE 2 & 3 — bottom action bar */
+  if (pointInRect(p, layout.hintBtn))  { useHint();      return; }
+  if (pointInRect(p, layout.extraBtn)) { buyExtraTube(); return; }
 
   const idx = tubeAtPoint(p);
   if (idx < 0) { selected = -1; return; }
@@ -502,6 +701,10 @@ const buzz       = () => { tone(150, 0.15, 'square', 0.045, 110); vibrate([50, 5
 function playWin() {
   [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
     setTimeout(() => tone(f, 0.24, 'sine', 0.06), i*110));
+}
+function playCoin() {
+  tone(988, 0.09, 'triangle', 0.05);
+  setTimeout(() => tone(1319, 0.14, 'triangle', 0.045), 80);
 }
 
 /* ----- Background music: soft synthwave/ambient loop (Am – F – C – G) ----- */
@@ -606,6 +809,52 @@ function getDisplay(i) {
   return { colors: t, frac: 0, fracColor: null };
 }
 
+/* ----- Coin pill widget (menu + playing bar) ----- */
+function drawCoinPill(x, y, w, h) {
+  ctx.save();
+  ctx.beginPath(); rr(ctx, x, y, w, h, 14);
+  ctx.fillStyle = 'rgba(255,214,10,0.10)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(255,214,10,0.42)';
+  ctx.stroke();
+
+  const iconSize = Math.round(h*0.42);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.font = iconSize + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",system-ui,sans-serif';
+  ctx.fillText('🪙', x + 9, y + h/2 + 1);
+
+  const numSize = Math.round(h*0.36);
+  ctx.font = '800 ' + numSize + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const tw = ctx.measureText(String(coins)).width;
+  ctx.fillStyle = '#ffe066';
+  ctx.fillText(String(coins), Math.max(x + 9 + iconSize + 4, x + w - 10 - tw), y + h/2 + 1);
+  ctx.restore();
+}
+
+/* ----- Bottom-bar button (HINT / EXTRA TUBE) ----- */
+function drawBarButton(b, label, sub, enabled, affordable) {
+  if (!b) return;
+  ctx.save();
+  ctx.beginPath(); rr(ctx, b.x, b.y, b.w, b.h, 14);
+  ctx.fillStyle = enabled ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = enabled ? 'rgba(160,210,255,0.45)' : 'rgba(255,255,255,0.12)';
+  ctx.stroke();
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const fs = Math.max(10, Math.min(13.5, b.w * 0.115));
+  ctx.fillStyle = enabled ? '#dceaff' : 'rgba(220,234,255,0.30)';
+  ctx.font = '800 ' + fs.toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText(label, b.x + b.w/2, b.y + b.h/2 - 7.5);
+
+  ctx.fillStyle = affordable ? 'rgba(255,224,102,0.92)' : 'rgba(255,224,102,0.34)';
+  ctx.font = '700 ' + (fs*0.82).toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('🪙 ' + sub, b.x + b.w/2, b.y + b.h/2 + 9.5);
+  ctx.restore();
+}
+
 function drawHUD() {
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#eaf2ff';
@@ -702,6 +951,22 @@ function drawTube(i) {
   }
   ctx.stroke();
   ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+
+  /* FEATURE 2 — hint highlight (source = gold, destination = mint) */
+  if (hint && (hint.src === i || hint.dst === i)) {
+    const isSrc = (hint.src === i);
+    const pulse = 0.55 + 0.45 * Math.sin(performance.now() * 0.012);
+    ctx.save();
+    ctx.beginPath(); rr(ctx, x - 4, y - 4, w + 8, h + 8, radius + 4);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = isSrc
+      ? 'rgba(255,214,10,' + pulse.toFixed(3) + ')'
+      : 'rgba(110,255,190,' + pulse.toFixed(3) + ')';
+    ctx.shadowColor = isSrc ? 'rgba(255,214,10,0.9)' : 'rgba(110,255,190,0.9)';
+    ctx.shadowBlur = 18;
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function drawStream() {
@@ -731,7 +996,7 @@ function drawWinOverlay() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
 
   const pop = 1 + (1-a)*0.18;
-  ctx.save(); ctx.translate(W/2, H/2 - 86); ctx.scale(pop, pop);
+  ctx.save(); ctx.translate(W/2, H/2 - 96); ctx.scale(pop, pop);
   ctx.fillStyle = '#ffffff';
   ctx.font = '800 30px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('LEVEL COMPLETE!', 0, 0);
@@ -739,12 +1004,24 @@ function drawWinOverlay() {
 
   ctx.fillStyle = 'rgba(190,215,240,0.8)';
   ctx.font = '600 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('Level ' + level + ' solved in ' + moves + ' moves', W/2, H/2 - 40);
+  ctx.fillText('Level ' + level + ' solved in ' + moves + ' moves', W/2, H/2 - 58);
+
+  /* FEATURE 1 — floating "+10 Coins" */
+  ctx.save();
+  const cA = Math.min(1, coinRewardT * 2.4);
+  ctx.globalAlpha = a * Math.max(0, Math.min(1, cA));
+  const rise = easeInOutQuad(Math.min(1, coinRewardT)) * 12;
+  ctx.fillStyle = '#ffd60a';
+  ctx.shadowColor = 'rgba(255,214,10,0.85)';
+  ctx.shadowBlur = 16;
+  ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('+' + WIN_COINS + ' COINS 🪙', W/2, H/2 - 26 - rise);
+  ctx.restore();
 
   const bw = Math.min(240, W*0.66), bh = 56;
 
   /* NEXT LEVEL */
-  layout.nextBtn = { x:(W-bw)/2, y:H/2 + 6, w:bw, h:bh };
+  layout.nextBtn = { x:(W-bw)/2, y:H/2 + 8, w:bw, h:bh };
   const g = ctx.createLinearGradient(0, layout.nextBtn.y, 0, layout.nextBtn.y + bh);
   g.addColorStop(0, '#3ddc84'); g.addColorStop(1, '#1fae63');
   ctx.beginPath(); rr(ctx, layout.nextBtn.x, layout.nextBtn.y, bw, bh, 16);
@@ -754,7 +1031,7 @@ function drawWinOverlay() {
   ctx.fillText('NEXT LEVEL', W/2, layout.nextBtn.y + bh/2 + 1);
 
   /* MENU */
-  ui.menuBtn = { x:(W-bw)/2, y:H/2 + 6 + bh + 14, w:bw, h:48 };
+  ui.menuBtn = { x:(W-bw)/2, y:H/2 + 8 + bh + 14, w:bw, h:48 };
   ctx.beginPath(); rr(ctx, ui.menuBtn.x, ui.menuBtn.y, bw, ui.menuBtn.h, 14);
   ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fill();
   ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
@@ -820,6 +1097,9 @@ function drawMainMenu() {
   /* Music toggle (top right) */
   ui.musicBtn = { x: W - 16 - 46, y: 16, w: 46, h: 46 };
   drawMusicBtn(ui.musicBtn);
+
+  /* FEATURE 1 — coins on the main menu (top left) */
+  drawCoinPill(16, 16, 84, 46);
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(180,200,225,0.55)';
@@ -917,14 +1197,46 @@ function drawPlaying() {
 
   for (let i = 0; i < tubes.length; i++) drawTube(i);
   drawStream();
+
+  /* FEATURE 1 / 2 / 3 — bottom action bar */
+  if (layout.coinBar) drawCoinPill(layout.coinBar.x, layout.coinBar.y, layout.coinBar.w, layout.coinBar.h);
+  drawBarButton(layout.hintBtn,  '💡 HINT', String(HINT_COST), !won, coins >= HINT_COST);
+  drawBarButton(layout.extraBtn, '➕ TUBE', String(TUBE_COST), !won && tubes.length < MAX_TUBES, coins >= TUBE_COST);
+
   if (won) drawWinOverlay();
+}
+
+/* ----- Toast popup ----- */
+function drawToast() {
+  if (!toast) return;
+  const a = Math.min(1, toast.t / 170) * Math.min(1, (toast.dur - toast.t) / 300);
+  const W = view.w;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, a));
+  ctx.font = '700 13.5px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const tw = ctx.measureText(toast.text).width;
+  const pw = Math.min(W - 32, tw + 36), ph = 40;
+  const px = (W - pw) / 2;
+  let py = view.h - 150;
+  if (layout.hintBtn) py = layout.hintBtn.y - ph - 16;
+  py = Math.max(86, Math.min(py, view.h - ph - 20));
+
+  ctx.beginPath(); rr(ctx, px, py, pw, ph, 20);
+  ctx.fillStyle = 'rgba(10,18,32,0.94)'; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
+
+  ctx.fillStyle = '#eaf2ff';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(toast.text, W/2, py + ph/2 + 1, pw - 26);
+  ctx.restore();
 }
 
 function render() {
   if (gameState === 'MENU')        drawMainMenu();
   else if (gameState === 'LEVELS') drawLevelMap();
   else                             drawPlaying();
-  drawParticles();                 // confetti on top of everything
+  drawParticles();                 // confetti / bubbles on top of everything
+  if (gameState === 'PLAYING') drawToast();
 }
 
 /* ---------- 11. UPDATE / LOOP ---------- */
@@ -940,6 +1252,11 @@ function update(dt) {
     if (shakeT === 0) shakeIndex = -1;
   }
   if (won && winProgress < 1) winProgress = Math.min(1, winProgress + dt/320);
+  if (won && coinRewardT < 1) coinRewardT = Math.min(1, coinRewardT + dt/900);
+
+  if (hint) { hint.t -= dt; if (hint.t <= 0) hint = null; }
+  if (toast) { toast.t += dt; if (toast.t >= toast.dur) toast = null; }
+
   updateParticles(dt);
 }
 
@@ -983,7 +1300,7 @@ window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 requestAnimationFrame(loop);
 
-console.log('[WaterSort] Booted. Menu first. Unlocked level ' + getUnlocked());
+console.log('[WaterSort] Booted. Menu first. Unlocked level ' + getUnlocked() + ' · Coins ' + coins);
 
 })();
 </script>
