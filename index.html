@@ -58,8 +58,6 @@ const HEX = {};
 COLORS.forEach(c => { HEX[c.key] = c.hex; });
 
 /* ---------- 3. STATE ---------- */
-/* Load saved progress on boot. Wrapped in try/catch because localStorage can
-   throw (private mode / blocked cookies / file:// in some browsers). */
 let level = (() => {
   try {
     const saved = parseInt(localStorage.getItem('watersort_level'), 10);
@@ -86,7 +84,64 @@ function saveCoins() {
   try { localStorage.setItem('watersort_coins', String(coins)); } catch (e) {}
 }
 
-let gameState = 'MENU';          // 'MENU', 'LEVELS', 'PLAYING'
+/* ---------- 3c. SHOP STATE ---------- */
+const SHOP_BGS = [
+  { id: 'default', name: 'Midnight', cost: 0,    colors: ['#182338', '#0e1626', '#070c14'] },
+  { id: 'sunset',  name: 'Sunset',   cost: 500,  colors: ['#2b1055', '#75225c', '#1e0b2d'] },
+  { id: 'matrix',  name: 'Matrix',   cost: 1000, colors: ['#0a1c0e', '#051208', '#020603'] }
+];
+const SHOP_TUBES = [
+  { id: 'default', name: 'Glass', cost: 0,    border: 'rgba(200,225,255,0.48)', fill: 'rgba(255,255,255,0.06)' },
+  { id: 'neon',    name: 'Neon',  cost: 800,  border: '#ff007f',                fill: 'rgba(255,0,127,0.08)'   },
+  { id: 'wood',    name: 'Wood',  cost: 1500, border: '#8b5a2b',                fill: 'rgba(139,90,43,0.15)'   }
+];
+
+let ownedBgs   = ['default'], activeBg   = 'default';
+let ownedTubes = ['default'], activeTube = 'default';
+let shopTab = 'bgs';                             // 'bgs' | 'tubes'
+const shopUI = { tabs:{}, cards:[], backBtn:null };
+
+/* ---------- 3d. SHOP PERSISTENCE ---------- */
+function loadShopProgress() {
+  try {
+    const bgs = JSON.parse(localStorage.getItem('watersort_ownedBgs')   || 'null');
+    if (Array.isArray(bgs) && bgs.length) ownedBgs = bgs;
+    const tbs = JSON.parse(localStorage.getItem('watersort_ownedTubes') || 'null');
+    if (Array.isArray(tbs) && tbs.length) ownedTubes = tbs;
+
+    const ab = localStorage.getItem('watersort_activeBg');
+    if (ab && SHOP_BGS.some(b => b.id === ab))     activeBg = ab;
+    const at = localStorage.getItem('watersort_activeTube');
+    if (at && SHOP_TUBES.some(t => t.id === at))   activeTube = at;
+  } catch (e) {}
+
+  // Ensure defaults are always present and active is owned
+  if (!ownedBgs.includes('default'))   ownedBgs.push('default');
+  if (!ownedTubes.includes('default')) ownedTubes.push('default');
+  if (!ownedBgs.includes(activeBg))    activeBg = 'default';
+  if (!ownedTubes.includes(activeTube))activeTube = 'default';
+}
+
+function saveShopProgress() {
+  try {
+    localStorage.setItem('watersort_ownedBgs',   JSON.stringify(ownedBgs));
+    localStorage.setItem('watersort_ownedTubes', JSON.stringify(ownedTubes));
+    localStorage.setItem('watersort_activeBg',   activeBg);
+    localStorage.setItem('watersort_activeTube', activeTube);
+  } catch (e) {}
+}
+
+/* Rebuild bgGradient from the currently-equipped background theme. */
+function applyActiveBg() {
+  if (!view.h) return;
+  const bg = SHOP_BGS.find(b => b.id === activeBg) || SHOP_BGS[0];
+  bgGradient = ctx.createLinearGradient(0, 0, 0, view.h);
+  bgGradient.addColorStop(0,    bg.colors[0]);
+  bgGradient.addColorStop(0.55, bg.colors[1]);
+  bgGradient.addColorStop(1,    bg.colors[2]);
+}
+
+let gameState = 'MENU';          // 'MENU', 'LEVELS', 'PLAYING', 'SHOP'
 let mapScroll = 0;               // level map scroll offset
 let mapMaxScroll = 0;
 let mapAutoScroll = false;       // LEVELS kholte waqt current level par scroll
@@ -112,7 +167,8 @@ const layout = {
   tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, replayBtn:null, musicBtn:null,
   coinBar:null, hintBtn:null, extraBtn:null
 };
-const ui = { playBtn:null, levelsBtn:null, helpBtn:null, helpClose:null, backBtn:null, menuBtn:null, musicBtn:null, cells:[] };
+const ui = { playBtn:null, levelsBtn:null, helpBtn:null, shopBtn:null, helpClose:null,
+             backBtn:null, menuBtn:null, musicBtn:null, cells:[] };
 
 /* Saved progress = highest unlocked level */
 function getUnlocked() {
@@ -178,20 +234,14 @@ function showToast(text, dur) {
 
 /* ============================================================
    4c. VECTOR ICON LIBRARY
-   All UI icons are DRAWN with the Canvas API instead of using
-   emoji characters. Emoji glyphs render as "tofu" boxes on
-   devices whose system font lacks them — these never will.
    ============================================================ */
 
-/* ---- COIN ICON -------------------------------------------------
-   Golden circle + darker inner edge ring + bright face + highlight. */
 function drawCoinIcon(c, x, y, radius) {
   if (!(radius > 0)) return;
   c.save();
   c.shadowBlur = 0; c.shadowColor = 'transparent';
   c.lineJoin = 'round';
 
-  /* 1. outer golden disc */
   const g = c.createRadialGradient(
     x - radius * 0.35, y - radius * 0.40, radius * 0.12,
     x, y, radius
@@ -204,19 +254,16 @@ function drawCoinIcon(c, x, y, radius) {
   c.fillStyle = g;
   c.fill();
 
-  /* 2. darker inner circle -> looks like the raised coin edge */
   c.beginPath();
   c.arc(x, y, radius * 0.78, 0, Math.PI * 2);
   c.fillStyle = '#c98700';
   c.fill();
 
-  /* 3. bright inner face */
   c.beginPath();
   c.arc(x, y, radius * 0.60, 0, Math.PI * 2);
   c.fillStyle = '#ffd94a';
   c.fill();
 
-  /* 4. subtle white highlight (upper-left crescent) */
   c.beginPath();
   c.arc(x, y, radius * 0.78, Math.PI * 1.02, Math.PI * 1.48);
   c.lineWidth = Math.max(1, radius * 0.16);
@@ -224,7 +271,6 @@ function drawCoinIcon(c, x, y, radius) {
   c.strokeStyle = 'rgba(255,255,255,0.55)';
   c.stroke();
 
-  /* 5. crisp outer rim */
   c.beginPath();
   c.arc(x, y, radius - Math.max(0.5, radius * 0.06), 0, Math.PI * 2);
   c.lineWidth = Math.max(1, radius * 0.12);
@@ -234,19 +280,16 @@ function drawCoinIcon(c, x, y, radius) {
   c.restore();
 }
 
-/* ---- HINT ICON (light bulb) -------------------------------------
-   Yellow bulb + grey base + radiating rays. */
 function drawHintIcon(c, x, y, size) {
   if (!(size > 0)) return;
   const s = size;
-  const R = s * 0.26;              // bulb radius
-  const cy = y - s * 0.10;         // bulb centre (lifted to leave room for base)
+  const R = s * 0.26;
+  const cy = y - s * 0.10;
 
   c.save();
   c.shadowBlur = 0; c.shadowColor = 'transparent';
   c.lineCap = 'round';
 
-  /* rays */
   c.strokeStyle = '#ffd60a';
   c.lineWidth = Math.max(1.1, s * 0.075);
   const rIn = R * 1.36, rOut = R * 1.90;
@@ -258,7 +301,6 @@ function drawHintIcon(c, x, y, size) {
     c.stroke();
   }
 
-  /* bulb */
   const g = c.createRadialGradient(
     x - R * 0.32, cy - R * 0.36, R * 0.12,
     x, cy, R
@@ -273,14 +315,12 @@ function drawHintIcon(c, x, y, size) {
   c.strokeStyle = 'rgba(190,140,0,0.55)';
   c.stroke();
 
-  /* grey base */
   const bw = R * 1.12, bh = R * 0.80;
   const bx = x - bw / 2, by = cy + R * 0.82;
   c.beginPath();
   rr(c, bx, by, bw, bh, Math.min(bh * 0.35, 2.5));
   c.fillStyle = '#9aa7b8';
   c.fill();
-  /* base thread line */
   c.beginPath();
   c.moveTo(bx + bw * 0.14, by + bh * 0.55);
   c.lineTo(bx + bw * 0.86, by + bh * 0.55);
@@ -291,46 +331,39 @@ function drawHintIcon(c, x, y, size) {
   c.restore();
 }
 
-/* ---- EXTRA TUBE ICON --------------------------------------------
-   Rounded-rect tube with liquid + bright green plus beside it. */
 function drawTubeIcon(c, x, y, size) {
   if (!(size > 0)) return;
   const s = size;
-  const tw = s * 0.42;             // tube width
-  const th = s * 0.84;             // tube height
-  const tcx = x - s * 0.26;        // tube centre-x (pushed left)
+  const tw = s * 0.42;
+  const th = s * 0.84;
+  const tcx = x - s * 0.26;
   const tx = tcx - tw / 2, ty = y - th / 2;
   const trad = Math.min(tw * 0.46, th * 0.22);
 
   c.save();
   c.shadowBlur = 0; c.shadowColor = 'transparent';
 
-  /* glass body */
   c.beginPath();
   rr(c, tx, ty, tw, th, trad);
   c.fillStyle = 'rgba(160,220,255,0.16)';
   c.fill();
 
-  /* liquid inside (clipped) */
   c.save();
   c.beginPath();
   rr(c, tx, ty, tw, th, trad);
   c.clip();
   c.fillStyle = 'rgba(90,195,255,0.80)';
   c.fillRect(tx, ty + th * 0.50, tw, th * 0.50);
-  /* shine */
   c.fillStyle = 'rgba(255,255,255,0.20)';
   c.fillRect(tx + tw * 0.16, ty + th * 0.10, tw * 0.16, th * 0.80);
   c.restore();
 
-  /* outline */
   c.beginPath();
   rr(c, tx, ty, tw, th, trad);
   c.lineWidth = Math.max(1.1, s * 0.065);
   c.strokeStyle = '#a9dcff';
   c.stroke();
 
-  /* bright green plus */
   const px = x + s * 0.26, py = y;
   const arm = s * 0.27, thick = s * 0.155;
   c.fillStyle = '#3ddc84';
@@ -344,8 +377,6 @@ function drawTubeIcon(c, x, y, size) {
   c.restore();
 }
 
-/* ---- MUSIC ICON ------------------------------------------------
-   Speaker (box + cone) with sound waves, or a red slash when muted. */
 function drawMusicIcon(c, x, y, size, isEnabled) {
   if (!(size > 0)) return;
   const s = size;
@@ -357,7 +388,6 @@ function drawMusicIcon(c, x, y, size, isEnabled) {
 
   const bodyCol = isEnabled ? '#dceaff' : 'rgba(220,234,255,0.42)';
 
-  /* speaker: small box on the left + cone (triangle) opening right */
   c.beginPath();
   c.moveTo(x - s * 0.46, y - s * 0.15);
   c.lineTo(x - s * 0.24, y - s * 0.15);
@@ -370,7 +400,6 @@ function drawMusicIcon(c, x, y, size, isEnabled) {
   c.fill();
 
   if (isEnabled) {
-    /* sound waves */
     const cx = x - s * 0.02;
     c.strokeStyle = '#dceaff';
     c.lineWidth = Math.max(1.1, s * 0.075);
@@ -381,7 +410,6 @@ function drawMusicIcon(c, x, y, size, isEnabled) {
       c.stroke();
     }
   } else {
-    /* mute slash */
     c.beginPath();
     c.moveTo(x - s * 0.44, y + s * 0.38);
     c.lineTo(x + s * 0.42, y - s * 0.38);
@@ -534,12 +562,11 @@ function doPour(src, dst) {
 
   anim = { from:src, to:dst, color, amount, elapsed:0, dur:380, p:0 };
   playPour();
-  vibrate(20);                                   // valid pour
+  vibrate(20);
 
-  /* FEATURE 4 — water bubbles pop at the destination tube */
   spawnBubbles(dst, color);
 
-  hint = null;                                   // hint used up / stale
+  hint = null;
 }
 function isWin() {
   for (const t of tubes) {
@@ -556,9 +583,8 @@ function checkWin() {
     saveProgress();
     playWin();
     spawnConfetti();
-    vibrate([100, 50, 100, 50, 300]);            // celebration pattern
+    vibrate([100, 50, 100, 50, 300]);
 
-    /* FEATURE 1 — reward coins */
     coins += WIN_COINS;
     saveCoins();
   }
@@ -586,11 +612,6 @@ function nextLevel() {
 }
 
 /* ---------- 7a. HINT + EXTRA TUBE ---------- */
-/* Find the most useful valid move. Prefers:
-   - pouring onto a matching (non-empty) tube
-   - moves that complete a tube
-   - moves that empty a tube completely
-   Never suggests moving a whole single-color tube into an empty tube (pointless). */
 function findHint() {
   let best = null;
   for (let i = 0; i < tubes.length; i++) {
@@ -600,13 +621,13 @@ function findHint() {
     for (let j = 0; j < tubes.length; j++) {
       if (!canPour(i, j)) continue;
       const dstLen = tubes[j].length;
-      if (dstLen === 0 && wouldEmpty) continue;      // pointless shuffle
+      if (dstLen === 0 && wouldEmpty) continue;
 
       let score = 0;
-      if (dstLen > 0) score += 10;                   // merging onto same color
-      if (dstLen + run === CAP) score += 6;          // completes the destination
-      if (wouldEmpty) score += 3;                    // frees up a tube
-      if (tubes[i].length === CAP) score += 1;       // partially dug out of a full tube
+      if (dstLen > 0) score += 10;
+      if (dstLen + run === CAP) score += 6;
+      if (wouldEmpty) score += 3;
+      if (tubes[i].length === CAP) score += 1;
 
       if (!best || score > best.score) best = { src:i, dst:j, score };
     }
@@ -652,8 +673,8 @@ function buyExtraTube() {
   saveCoins();
 
   tubes.push([]);
-  initialTubes.push([]);          // keep the purchase across RESET
-  history = [];                   // old snapshots would not include the new tube
+  initialTubes.push([]);
+  history = [];
   hint = null;
   computeLayout();
   playSelect();
@@ -666,31 +687,30 @@ const CONFETTI_COLORS = COLORS.map(c => c.hex).concat(['#ffffff', '#ffd700', '#f
 
 function spawnConfetti() {
   const W = view.w, H = view.h;
-  const count = 100 + Math.floor(Math.random() * 51);   // 100–150
+  const count = 100 + Math.floor(Math.random() * 51);
   for (let i = 0; i < count; i++) {
     particles.push({
       x: Math.random() * W,
-      y: -10 - Math.random() * H * 0.45,                 // staggered above the screen
-      vx: (Math.random() - 0.5) * 140,                   // px/s
-      vy: 60 + Math.random() * 180,                      // px/s
+      y: -10 - Math.random() * H * 0.45,
+      vx: (Math.random() - 0.5) * 140,
+      vy: 60 + Math.random() * 180,
       size: 6 + Math.random() * 7,
       color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
       shape: Math.random() < 0.55 ? 'square' : 'circle',
       rot: Math.random() * Math.PI * 2,
-      vr: (Math.random() - 0.5) * 9,                     // rad/s
+      vr: (Math.random() - 0.5) * 9,
       tilt: Math.random() * Math.PI * 2,
-      vt: 3 + Math.random() * 5,                         // flutter speed
+      vt: 3 + Math.random() * 5,
       sway: Math.random() * Math.PI * 2,
       swayV: 1.5 + Math.random() * 2.5
     });
   }
 }
 
-/* FEATURE 4 — water bubbles */
 function spawnBubbles(tubeIdx, colorKey) {
   const r = layout.tubes[tubeIdx];
   if (!r) return;
-  const n = 5 + Math.floor(Math.random() * 6);          // 5–10 bubbles
+  const n = 5 + Math.floor(Math.random() * 6);
   const cx = r.x + r.w/2;
   for (let i = 0; i < n; i++) {
     particles.push({
@@ -715,20 +735,18 @@ function updateParticles(dt) {
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
 
-    /* ---- bubbles: float up, wobble, pop ---- */
     if (p.bubble) {
       p.life += s;
       p.wob += p.wobV * s;
       p.x += (p.vx + Math.sin(p.wob) * 26) * s;
       p.y += p.vy * s;
-      p.vy *= Math.max(0, 1 - 1.6 * s);      // slow down as it rises
+      p.vy *= Math.max(0, 1 - 1.6 * s);
       if (p.life >= p.maxLife || p.y < -20) particles.splice(i, 1);
       continue;
     }
 
-    /* ---- confetti: falls down ---- */
-    p.vy += 330 * s;                         // gravity
-    if (p.vy > 420) p.vy = 420;              // terminal velocity (paper-like)
+    p.vy += 330 * s;
+    if (p.vy > 420) p.vy = 420;
     p.sway += p.swayV * s;
     p.x += (p.vx + Math.sin(p.sway) * 40) * s;
     p.y += p.vy * s;
@@ -744,7 +762,6 @@ function drawParticles() {
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];
 
-    /* ---- bubbles ---- */
     if (p.bubble) {
       const fade = 1 - Math.max(0, (p.life - p.maxLife*0.55) / (p.maxLife*0.45));
       const a = Math.max(0, Math.min(1, fade));
@@ -766,7 +783,6 @@ function drawParticles() {
       continue;
     }
 
-    /* ---- confetti ---- */
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.rot);
@@ -774,7 +790,7 @@ function drawParticles() {
     if (p.shape === 'circle') {
       ctx.beginPath(); ctx.arc(0, 0, p.size * 0.45, 0, Math.PI * 2); ctx.fill();
     } else {
-      const flip = Math.max(0.2, Math.abs(Math.cos(p.tilt)));   // flutter effect
+      const flip = Math.max(0.2, Math.abs(Math.cos(p.tilt)));
       ctx.fillRect(-p.size/2, -p.size*flip/2, p.size, p.size*flip);
     }
     ctx.restore();
@@ -805,21 +821,16 @@ function toggleMusic() {
 }
 function handleTap(p) {
   initAudio();
-  if (musicEnabled) startBGM();     // first user gesture unlocks audio; no-op if already playing
+  if (musicEnabled) startBGM();
 
   /* ---- MAIN MENU ---- */
   if (gameState === 'MENU') {
-    /* Help overlay open: kisi bhi jagah tap (ya CLOSE) se band ho jaye */
-    if (showHelp) {
-      playSelect();
-      showHelp = false;
-      return;
-    }
+    if (showHelp) { playSelect(); showHelp = false; return; }
     if (pointInRect(p, ui.musicBtn)) { toggleMusic(); return; }
     if (pointInRect(p, ui.playBtn)) {
       playSelect();
       gameState = 'PLAYING';
-      startLevel(getUnlocked());          // continue from highest unlocked level
+      startLevel(getUnlocked());
     } else if (pointInRect(p, ui.levelsBtn)) {
       playSelect();
       gameState = 'LEVELS';
@@ -827,6 +838,60 @@ function handleTap(p) {
     } else if (pointInRect(p, ui.helpBtn)) {
       playSelect();
       showHelp = true;
+    } else if (pointInRect(p, ui.shopBtn)) {
+      playSelect();
+      gameState = 'SHOP';
+    }
+    return;
+  }
+
+  /* ---- SHOP ---- */
+  if (gameState === 'SHOP') {
+    if (pointInRect(p, shopUI.backBtn)) { playSelect(); gameState = 'MENU'; return; }
+    if (pointInRect(p, shopUI.tabs.bgs)) {
+      if (shopTab !== 'bgs') { playSelect(); shopTab = 'bgs'; }
+      return;
+    }
+    if (pointInRect(p, shopUI.tabs.tubes)) {
+      if (shopTab !== 'tubes') { playSelect(); shopTab = 'tubes'; }
+      return;
+    }
+    for (let i = 0; i < shopUI.cards.length; i++) {
+      const card = shopUI.cards[i];
+      if (!pointInRect(p, card)) continue;
+      const item = card.item;
+
+      if (card.equipped) { playSelect(); return; }
+
+      if (card.owned) {
+        if (shopTab === 'bgs') { activeBg = item.id; applyActiveBg(); }
+        else                   { activeTube = item.id; }
+        saveShopProgress();
+        playSelect(); vibrate(15);
+        showToast(item.name + ' equipped!');
+        return;
+      }
+
+      if (coins < item.cost) {
+        buzz();
+        showToast('Not enough coins! Need ' + item.cost);
+        return;
+      }
+      coins -= item.cost;
+      saveCoins();
+
+      if (shopTab === 'bgs') {
+        ownedBgs.push(item.id);
+        activeBg = item.id;
+        applyActiveBg();
+      } else {
+        ownedTubes.push(item.id);
+        activeTube = item.id;
+      }
+      saveShopProgress();
+      playCoin(); vibrate(25);
+      showToast(item.name + ' purchased!');
+      return;
     }
     return;
   }
@@ -834,7 +899,7 @@ function handleTap(p) {
   /* ---- LEVEL MAP ---- */
   if (gameState === 'LEVELS') {
     if (pointInRect(p, ui.backBtn)) { playSelect(); gameState = 'MENU'; return; }
-    if (p.y < 76) return;                 // header ke neeche chhupe cells ignore
+    if (p.y < 76) return;
     for (let i = 0; i < ui.cells.length; i++) {
       if (pointInRect(p, ui.cells[i])) {
         playSelect();
@@ -862,8 +927,6 @@ function handleTap(p) {
   if (anim) return;
   if (pointInRect(p, layout.undoBtn))  { doUndo();  return; }
   if (pointInRect(p, layout.resetBtn)) { doReset(); return; }
-
-  /* FEATURE 2 & 3 — bottom action bar */
   if (pointInRect(p, layout.hintBtn))  { useHint();      return; }
   if (pointInRect(p, layout.extraBtn)) { buyExtraTube(); return; }
 
@@ -872,21 +935,20 @@ function handleTap(p) {
 
   if (selected === -1) {
     if (!tubes[idx].length) return;
-    selected = idx; playSelect(); vibrate(10); return;     // light tap
+    selected = idx; playSelect(); vibrate(10); return;
   }
   if (selected === idx) { selected = -1; return; }
 
   if (canPour(selected, idx)) {
     doPour(selected, idx); selected = -1;
   } else {
-    buzz();                                                // also vibrates (invalid move)
+    buzz();
     shakeT = SHAKE_DUR; shakeIndex = idx;
     selected = tubes[idx].length > 0 ? idx : -1;
   }
 }
 
-/* Pointer events: LEVELS screen par drag = scroll, tap = select.
-   Baaki screens par tap foran register hota hai. */
+/* Pointer events */
 let ptr = null;
 
 canvas.addEventListener('pointerdown', e => {
@@ -953,14 +1015,14 @@ function playCoin() {
   setTimeout(() => tone(1319, 0.14, 'triangle', 0.045), 80);
 }
 
-/* ----- Background music: soft synthwave/ambient loop (Am – F – C – G) ----- */
-const BGM_STEP  = 0.26;                                  // seconds per step (16 steps = 1 loop)
-const BGM_BASS  = [55, 43.65, 65.41, 49];                // A1, F1, C2, G1 — one per chord (4 steps)
+/* ----- Background music ----- */
+const BGM_STEP  = 0.26;
+const BGM_BASS  = [55, 43.65, 65.41, 49];
 const BGM_ARP   = [
-  [220.00, 261.63, 329.63, 261.63],                      // Am
-  [174.61, 220.00, 261.63, 220.00],                      // F
-  [261.63, 329.63, 392.00, 329.63],                      // C
-  [196.00, 246.94, 293.66, 246.94]                       // G
+  [220.00, 261.63, 329.63, 261.63],
+  [174.61, 220.00, 261.63, 220.00],
+  [261.63, 329.63, 392.00, 329.63],
+  [196.00, 246.94, 293.66, 246.94]
 ];
 const BGM_MELODY = [659.25,0,523.25,0, 523.25,0,440,0, 523.25,0,659.25,0, 587.33,0,493.88,0];
 let bgmGain = null, bgmTimer = null, bgmStep = 0, bgmNext = 0;
@@ -979,14 +1041,14 @@ function bgmNote(freq, t, dur, type, vol) {
 }
 function bgmSchedule(step, t) {
   const chord = Math.floor(step / 4), inChord = step % 4;
-  if (inChord === 0 || inChord === 2) bgmNote(BGM_BASS[chord], t, BGM_STEP*2*0.95, 'triangle', 0.14);   // bass
-  bgmNote(BGM_ARP[chord][inChord], t, BGM_STEP*1.2, 'sine', 0.03);                                       // soft arp
-  if (BGM_MELODY[step]) bgmNote(BGM_MELODY[step], t, BGM_STEP*2.2, 'sine', 0.05);                        // melody
+  if (inChord === 0 || inChord === 2) bgmNote(BGM_BASS[chord], t, BGM_STEP*2*0.95, 'triangle', 0.14);
+  bgmNote(BGM_ARP[chord][inChord], t, BGM_STEP*1.2, 'sine', 0.03);
+  if (BGM_MELODY[step]) bgmNote(BGM_MELODY[step], t, BGM_STEP*2.2, 'sine', 0.05);
 }
 function bgmTick() {
   if (!audioCtx || !bgmGain) return;
   const now = audioCtx.currentTime;
-  if (bgmNext < now) bgmNext = now + 0.05;               // catch up if timer was throttled
+  if (bgmNext < now) bgmNext = now + 0.05;
   while (bgmNext < now + 0.3) {
     bgmSchedule(bgmStep, bgmNext);
     bgmNext += BGM_STEP;
@@ -1000,7 +1062,7 @@ function startBGM() {
   bgmGain = audioCtx.createGain();
   const now = audioCtx.currentTime;
   bgmGain.gain.setValueAtTime(0.0001, now);
-  bgmGain.gain.linearRampToValueAtTime(0.6, now + 0.8);  // fade in
+  bgmGain.gain.linearRampToValueAtTime(0.6, now + 0.8);
   bgmGain.connect(audioCtx.destination);
   bgmStep = 0;
   bgmNext = now + 0.1;
@@ -1014,13 +1076,12 @@ function stopBGM() {
     try {
       g.gain.cancelScheduledValues(now);
       g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), now);
-      g.gain.linearRampToValueAtTime(0.0001, now + 0.25);   // fade out
+      g.gain.linearRampToValueAtTime(0.0001, now + 0.25);
     } catch (e) {}
     setTimeout(() => { try { g.disconnect(); } catch (e) {} }, 450);
   }
   bgmGain = null;
 }
-/* Pause audio when the tab/app goes to background */
 document.addEventListener('visibilitychange', () => {
   if (!audioCtx) return;
   try {
@@ -1055,7 +1116,6 @@ function getDisplay(i) {
   return { colors: t, frac: 0, fracColor: null };
 }
 
-/* ----- Coin pill widget (menu + playing bar) — vector coin icon ----- */
 function drawCoinPill(x, y, w, h) {
   ctx.save();
   ctx.beginPath(); rr(ctx, x, y, w, h, 14);
@@ -1078,8 +1138,6 @@ function drawCoinPill(x, y, w, h) {
   ctx.restore();
 }
 
-/* ----- Bottom-bar button (HINT / EXTRA TUBE) — vector icons ----- */
-/* iconType: 'hint' | 'tube' */
 function drawBarButton(b, iconType, label, sub, enabled, affordable) {
   if (!b) return;
   ctx.save();
@@ -1093,7 +1151,6 @@ function drawBarButton(b, iconType, label, sub, enabled, affordable) {
   const cx = b.x + b.w / 2;
   const fs = Math.max(10, Math.min(13.5, b.w * 0.115));
 
-  /* ---- line 1 : icon + label (drawn as one centered group) ---- */
   const font1 = '800 ' + fs.toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.font = font1;
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -1112,7 +1169,6 @@ function drawBarButton(b, iconType, label, sub, enabled, affordable) {
   ctx.fillStyle = enabled ? '#dceaff' : 'rgba(220,234,255,0.30)';
   ctx.fillText(label, l1x + icoS + gap1, l1y);
 
-  /* ---- line 2 : coin icon + cost (centered group) ---- */
   const fs2 = fs * 0.82;
   const font2 = '700 ' + fs2.toFixed(1) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.font = font2;
@@ -1163,7 +1219,6 @@ function drawButton(b, enabled) {
   ctx.restore();
 }
 
-/* Music toggle — vector speaker icon (no emoji) */
 function drawMusicBtn(b) {
   if (!b) return;
   ctx.save();
@@ -1184,6 +1239,7 @@ function drawTube(i) {
   const r = layout.tubes[i]; if (!r) return;
   const disp = getDisplay(i);
   const isSel = (selected === i) && !anim;
+  const skin = SHOP_TUBES.find(t => t.id === activeTube) || SHOP_TUBES[0];
 
   let ox = 0, oy = 0;
   if (shakeT > 0 && shakeIndex === i) ox = Math.sin(shakeT*0.09)*9*(shakeT/SHAKE_DUR);
@@ -1195,7 +1251,7 @@ function drawTube(i) {
   const wall = Math.max(3, w*0.075);
 
   ctx.beginPath(); rr(ctx, x, y, w, h, radius);
-  ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
+  ctx.fillStyle = skin.fill; ctx.fill();
 
   ctx.save();
   ctx.beginPath();
@@ -1218,7 +1274,6 @@ function drawTube(i) {
     ctx.fillStyle = HEX[disp.fracColor] || '#888888';
     ctx.fillRect(innerX, cy - fh, innerW, fh + 0.6);
   }
-  /* (inner vertical line removed — empty tubes ab clean glass jaise dikhte hain) */
   ctx.restore();
 
   ctx.beginPath(); rr(ctx, x, y, w, h, radius);
@@ -1227,12 +1282,11 @@ function drawTube(i) {
     ctx.shadowBlur = 18;
     ctx.lineWidth = 3; ctx.strokeStyle = '#8fe6ff';
   } else {
-    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(200,225,255,0.48)';
+    ctx.lineWidth = 2; ctx.strokeStyle = skin.border;
   }
   ctx.stroke();
   ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
 
-  /* FEATURE 2 — hint highlight (source = gold, destination = mint) */
   if (hint && (hint.src === i || hint.dst === i)) {
     const isSrc = (hint.src === i);
     const pulse = 0.55 + 0.45 * Math.sin(performance.now() * 0.012);
@@ -1286,7 +1340,6 @@ function drawWinOverlay() {
   ctx.font = '600 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('Level ' + level + ' solved in ' + moves + ' moves', W/2, H/2 - 58);
 
-  /* FEATURE 1 — floating "+10 COINS" with a VECTOR coin icon */
   ctx.save();
   const cA = Math.min(1, coinRewardT * 2.4);
   ctx.globalAlpha = a * Math.max(0, Math.min(1, cA));
@@ -1310,13 +1363,11 @@ function drawWinOverlay() {
   drawCoinIcon(ctx, rStart + rtw + rGap + rIconR, rewardY, rIconR);
   ctx.restore();
 
-  /* restore centered alignment for the remaining labels */
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.globalAlpha = a;
 
   const bw = Math.min(240, W*0.66), bh = 56;
 
-  /* NEXT LEVEL */
   layout.nextBtn = { x:(W-bw)/2, y:H/2 + 8, w:bw, h:bh };
   const g = ctx.createLinearGradient(0, layout.nextBtn.y, 0, layout.nextBtn.y + bh);
   g.addColorStop(0, '#3ddc84'); g.addColorStop(1, '#1fae63');
@@ -1326,7 +1377,6 @@ function drawWinOverlay() {
   ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('NEXT LEVEL', W/2, layout.nextBtn.y + bh/2 + 1);
 
-  /* REPLAY (NEXT LEVEL aur MENU ke beech) */
   layout.replayBtn = { x:(W-bw)/2, y:layout.nextBtn.y + bh + 12, w:bw, h:48 };
   ctx.beginPath(); rr(ctx, layout.replayBtn.x, layout.replayBtn.y, bw, layout.replayBtn.h, 14);
   ctx.fillStyle = 'rgba(74,168,255,0.22)'; ctx.fill();
@@ -1335,7 +1385,6 @@ function drawWinOverlay() {
   ctx.font = '700 15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('REPLAY', W/2, layout.replayBtn.y + layout.replayBtn.h/2 + 1);
 
-  /* MENU */
   ui.menuBtn = { x:(W-bw)/2, y:layout.replayBtn.y + layout.replayBtn.h + 12, w:bw, h:48 };
   ctx.beginPath(); rr(ctx, ui.menuBtn.x, ui.menuBtn.y, bw, ui.menuBtn.h, 14);
   ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fill();
@@ -1347,7 +1396,6 @@ function drawWinOverlay() {
   ctx.restore();
 }
 
-/* ----- Menu / Level map drawing ----- */
 function drawBigButton(b, label, c1, c2, textColor) {
   const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
   g.addColorStop(0, c1); g.addColorStop(1, c2);
@@ -1361,12 +1409,10 @@ function drawBigButton(b, label, c1, c2, textColor) {
   ctx.restore();
 }
 
-/* ----- HOW TO PLAY overlay ----- */
 function drawHelpOverlay() {
   const W = view.w, H = view.h;
   ctx.save();
 
-  /* dim background */
   ctx.globalAlpha = 0.86;
   ctx.fillStyle = '#050a14';
   ctx.fillRect(0, 0, W, H);
@@ -1398,18 +1444,15 @@ function drawHelpOverlay() {
   const px = (W - panelW) / 2;
   const py = Math.max(16, (H - panelH) / 2);
 
-  /* panel */
   ctx.beginPath(); rr(ctx, px, py, panelW, panelH, 22);
   ctx.fillStyle = '#0e1626'; ctx.fill();
   ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
 
-  /* title */
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#eaf2ff';
   ctx.font = '800 22px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('HOW TO PLAY', W/2, py + padIn + titleH/2);
 
-  /* body text */
   ctx.fillStyle = 'rgba(210,225,245,0.92)';
   ctx.font = font;
   let ty = py + padIn + titleH + titleGap + lineH/2;
@@ -1421,7 +1464,6 @@ function drawHelpOverlay() {
     ty += paraGap;
   }
 
-  /* CLOSE button */
   const cbW = Math.min(180, panelW - padIn*2);
   ui.helpClose = {
     x: (W - cbW) / 2,
@@ -1446,50 +1488,51 @@ function drawMainMenu() {
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
 
-  /* Title */
   ctx.save();
   ctx.fillStyle = '#eaf2ff';
   ctx.shadowColor = 'rgba(64,200,224,0.65)';
   ctx.shadowBlur = 22;
   ctx.font = '900 ' + Math.min(52, W*0.13) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('WATER SORT', W/2, H*0.20);
+  ctx.fillText('WATER SORT', W/2, H*0.18);
   ctx.restore();
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(180,200,225,0.7)';
   ctx.font = '700 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('P U Z Z L E', W/2, H*0.20 + Math.min(52, W*0.13)*0.75);
+  ctx.fillText('P U Z Z L E', W/2, H*0.18 + Math.min(52, W*0.13)*0.75);
 
-  /* Decorative color dots */
   const dotR = 9, dotGap = 12;
   const rowW = COLORS.length*(dotR*2) + (COLORS.length-1)*dotGap;
   let dx = (W - rowW)/2 + dotR;
   for (let i = 0; i < COLORS.length; i++) {
-    ctx.beginPath(); ctx.arc(dx, H*0.31, dotR, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(dx, H*0.28, dotR, 0, Math.PI*2);
     ctx.fillStyle = COLORS[i].hex; ctx.fill();
     dx += dotR*2 + dotGap;
   }
 
-  /* Buttons */
-  const bw = Math.min(260, W*0.7), bh = 60, bGap = 18;
-  ui.playBtn   = { x:(W-bw)/2, y:H*0.44,                     w:bw, h:bh };
-  ui.levelsBtn = { x:(W-bw)/2, y:H*0.44 + (bh+bGap),         w:bw, h:bh };
-  ui.helpBtn   = { x:(W-bw)/2, y:H*0.44 + (bh+bGap)*2,       w:bw, h:bh };
+  /* 4 buttons, compact */
+  const bw = Math.min(260, W*0.7), bh = 54, bGap = 14;
+  const startY = H*0.40;
+  ui.playBtn   = { x:(W-bw)/2, y:startY,               w:bw, h:bh };
+  ui.levelsBtn = { x:(W-bw)/2, y:startY + (bh+bGap),   w:bw, h:bh };
+  ui.helpBtn   = { x:(W-bw)/2, y:startY + (bh+bGap)*2, w:bw, h:bh };
+  ui.shopBtn   = { x:(W-bw)/2, y:startY + (bh+bGap)*3, w:bw, h:bh };
+
   drawBigButton(ui.playBtn,   'PLAY',        '#3ddc84', '#1fae63', '#04220f');
   drawBigButton(ui.levelsBtn, 'LEVELS',      '#4aa8ff', '#2a78d6', '#04162e');
   drawBigButton(ui.helpBtn,   'HOW TO PLAY', '#b57bff', '#8a4fd6', '#1a0833');
+  drawBigButton(ui.shopBtn,   'SHOP',        '#ffb347', '#d97706', '#2b1300');
 
-  /* Music toggle (top right) */
   ui.musicBtn = { x: W - 16 - 46, y: 16, w: 46, h: 46 };
   drawMusicBtn(ui.musicBtn);
 
-  /* FEATURE 1 — coins on the main menu (top left) */
   drawCoinPill(16, 16, 84, 46);
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(180,200,225,0.55)';
   ctx.font = '600 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('Level ' + getUnlocked() + ' reached', W/2, H*0.44 + (bh+bGap)*3 + 8);
+  ctx.fillText('Level ' + getUnlocked() + ' reached', W/2,
+               Math.min(H - 24, startY + (bh+bGap)*4 + 8));
 
   if (showHelp) drawHelpOverlay();
 }
@@ -1527,7 +1570,6 @@ function drawLevelMap() {
   }
   mapScroll = Math.max(0, Math.min(mapScroll, mapMaxScroll));
 
-  /* ---- PERFORMANCE: sirf screen par nazar aane wali rows render hoti hain ---- */
   const firstRow = Math.max(0, Math.floor((mapScroll - 10 - cell) / rowStep));
   const lastRow  = Math.min(rows - 1, Math.ceil((mapScroll + viewH) / rowStep));
 
@@ -1570,7 +1612,6 @@ function drawLevelMap() {
   }
   ctx.restore();
 
-  /* Header (solid background over the grid) */
   ctx.fillStyle = '#0e1626';
   ctx.fillRect(0, 0, W, headerH);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -1586,6 +1627,152 @@ function drawLevelMap() {
   drawButton(ui.backBtn, true);
 }
 
+/* ---------- SHOP SCREEN ---------- */
+function drawShop() {
+  const W = view.w, H = view.h;
+  ctx.fillStyle = bgGradient || '#0b1220';
+  ctx.fillRect(0, 0, W, H);
+
+  /* Header */
+  ctx.fillStyle = 'rgba(14,22,38,0.92)';
+  ctx.fillRect(0, 0, W, 76);
+
+  shopUI.backBtn = { x:16, y:(76-38)/2, w:78, h:38, label:'BACK' };
+  drawButton(shopUI.backBtn, true);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '800 22px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('SHOP', W/2, 30);
+  ctx.fillStyle = 'rgba(180,200,225,0.7)';
+  ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('Customize your game', W/2, 52);
+
+  /* Coins (top-right) */
+  drawCoinPill(W - 16 - 96, 15, 96, 46);
+
+  /* Tabs */
+  const tabY = 92, tabH = 42, tabGap = 10, tabPadX = 16;
+  const tabW = (W - tabPadX*2 - tabGap) / 2;
+  shopUI.tabs.bgs   = { x: tabPadX,                 y: tabY, w: tabW, h: tabH, id:'bgs',   label:'BACKGROUNDS' };
+  shopUI.tabs.tubes = { x: tabPadX + tabW + tabGap, y: tabY, w: tabW, h: tabH, id:'tubes', label:'TUBE SKINS'  };
+
+  [shopUI.tabs.bgs, shopUI.tabs.tubes].forEach(tab => {
+    const active = shopTab === tab.id;
+    ctx.beginPath(); rr(ctx, tab.x, tab.y, tab.w, tab.h, 12);
+    ctx.fillStyle = active ? 'rgba(74,168,255,0.32)' : 'rgba(255,255,255,0.06)';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = active ? 'rgba(143,230,255,0.85)' : 'rgba(255,255,255,0.14)';
+    ctx.stroke();
+    ctx.fillStyle = active ? '#eaf2ff' : 'rgba(220,234,255,0.55)';
+    ctx.font = '800 12.5px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(tab.label, tab.x + tab.w/2, tab.y + tab.h/2 + 1);
+  });
+
+  /* Grid */
+  const items   = shopTab === 'bgs' ? SHOP_BGS : SHOP_TUBES;
+  const gridTop = tabY + tabH + 22;
+  const padX = 16, gap = 14;
+  const cols  = W >= 480 ? 3 : 2;
+  const cardW = (W - padX*2 - (cols-1)*gap) / cols;
+  const cardH = Math.min(160, cardW * 1.05);
+
+  shopUI.cards = [];
+  items.forEach((item, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = padX + col*(cardW + gap);
+    const y = gridTop + row*(cardH + gap);
+    if (y + cardH > H - 12) return;
+
+    const list     = shopTab === 'bgs' ? ownedBgs : ownedTubes;
+    const activeId = shopTab === 'bgs' ? activeBg : activeTube;
+    const owned    = list.includes(item.id);
+    const equipped = activeId === item.id;
+
+    ctx.beginPath(); rr(ctx, x, y, cardW, cardH, 16);
+    ctx.fillStyle = equipped ? 'rgba(61,220,132,0.14)' : 'rgba(255,255,255,0.06)';
+    ctx.fill();
+    ctx.lineWidth = equipped ? 2 : 1.5;
+    ctx.strokeStyle = equipped ? 'rgba(61,220,132,0.75)' : 'rgba(255,255,255,0.14)';
+    ctx.stroke();
+
+    /* preview */
+    const prevH = cardH * 0.55;
+    const prevX = x + 10, prevY = y + 10, prevW = cardW - 20;
+    ctx.save();
+    ctx.beginPath(); rr(ctx, prevX, prevY, prevW, prevH, 10);
+    ctx.clip();
+
+    if (shopTab === 'bgs') {
+      const g = ctx.createLinearGradient(0, prevY, 0, prevY + prevH);
+      g.addColorStop(0,    item.colors[0]);
+      g.addColorStop(0.55, item.colors[1]);
+      g.addColorStop(1,    item.colors[2]);
+      ctx.fillStyle = g;
+      ctx.fillRect(prevX, prevY, prevW, prevH);
+    } else {
+      ctx.fillStyle = '#0b1220';
+      ctx.fillRect(prevX, prevY, prevW, prevH);
+      const tw  = Math.min(prevW * 0.28, prevH * 0.30);
+      const th  = tw * 3;
+      const tcx = prevX + prevW/2, tcy = prevY + prevH/2;
+      const tx = tcx - tw/2, ty = tcy - th/2;
+      const trad = Math.min(tw*0.34, 10);
+
+      ctx.beginPath(); rr(ctx, tx, ty, tw, th, trad);
+      ctx.fillStyle = item.fill; ctx.fill();
+
+      ctx.save();
+      ctx.beginPath(); rr(ctx, tx, ty, tw, th, trad); ctx.clip();
+      const bandH = th / 4;
+      ctx.fillStyle = HEX['blue']   || '#0a84ff';
+      ctx.fillRect(tx, ty + bandH*2, tw, bandH*2);
+      ctx.fillStyle = HEX['yellow'] || '#ffd60a';
+      ctx.fillRect(tx, ty + bandH,   tw, bandH);
+      ctx.fillStyle = HEX['red']    || '#ff3b30';
+      ctx.fillRect(tx, ty,           tw, bandH);
+      ctx.restore();
+
+      ctx.beginPath(); rr(ctx, tx, ty, tw, th, trad);
+      ctx.lineWidth = 2.5; ctx.strokeStyle = item.border; ctx.stroke();
+    }
+    ctx.restore();
+
+    /* name */
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#eaf2ff';
+    ctx.font = '800 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.fillText(item.name, x + 14, y + prevH + 26);
+
+    /* status */
+    const statusY = y + cardH - 22;
+    if (equipped) {
+      ctx.fillStyle = '#3ddc84';
+      ctx.font = '800 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('EQUIPPED', x + 14, statusY);
+    } else if (owned) {
+      ctx.fillStyle = 'rgba(143,230,255,0.9)';
+      ctx.font = '800 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('TAP TO EQUIP', x + 14, statusY);
+    } else {
+      const r = 8;
+      drawCoinIcon(ctx, x + 14 + r, statusY, r);
+      const affordable = coins >= item.cost;
+      ctx.fillStyle = affordable ? '#ffe066' : '#ff6b6b';
+      ctx.font = '800 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(String(item.cost), x + 14 + r*2 + 8, statusY);
+    }
+
+    shopUI.cards.push({ x, y, w:cardW, h:cardH, item, owned, equipped });
+  });
+}
+
 function drawPlaying() {
   const W = view.w, H = view.h;
   ctx.fillStyle = bgGradient || '#0b1220';
@@ -1598,7 +1785,6 @@ function drawPlaying() {
   for (let i = 0; i < tubes.length; i++) drawTube(i);
   drawStream();
 
-  /* FEATURE 1 / 2 / 3 — bottom action bar (all vector icons) */
   if (layout.coinBar) drawCoinPill(layout.coinBar.x, layout.coinBar.y, layout.coinBar.w, layout.coinBar.h);
   drawBarButton(layout.hintBtn,  'hint', 'HINT', String(HINT_COST), !won, coins >= HINT_COST);
   drawBarButton(layout.extraBtn, 'tube', 'TUBE', String(TUBE_COST), !won && tubes.length < MAX_TUBES, coins >= TUBE_COST);
@@ -1606,7 +1792,6 @@ function drawPlaying() {
   if (won) drawWinOverlay();
 }
 
-/* ----- Toast popup ----- */
 function drawToast() {
   if (!toast) return;
   const a = Math.min(1, toast.t / 170) * Math.min(1, (toast.dur - toast.t) / 300);
@@ -1617,8 +1802,13 @@ function drawToast() {
   const tw = ctx.measureText(toast.text).width;
   const pw = Math.min(W - 32, tw + 36), ph = 40;
   const px = (W - pw) / 2;
-  let py = view.h - 150;
-  if (layout.hintBtn) py = layout.hintBtn.y - ph - 16;
+
+  let py;
+  if (gameState === 'PLAYING' && layout.hintBtn) {
+    py = layout.hintBtn.y - ph - 16;
+  } else {
+    py = view.h - ph - 80;
+  }
   py = Math.max(86, Math.min(py, view.h - ph - 20));
 
   ctx.beginPath(); rr(ctx, px, py, pw, ph, 20);
@@ -1634,9 +1824,10 @@ function drawToast() {
 function render() {
   if (gameState === 'MENU')        drawMainMenu();
   else if (gameState === 'LEVELS') drawLevelMap();
+  else if (gameState === 'SHOP')   drawShop();
   else                             drawPlaying();
-  drawParticles();                 // confetti / bubbles on top of everything
-  if (gameState === 'PLAYING') drawToast();
+  drawParticles();
+  if (gameState === 'PLAYING' || gameState === 'SHOP') drawToast();
 }
 
 /* ---------- 11. UPDATE / LOOP ---------- */
@@ -1683,16 +1874,15 @@ function resize() {
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  bgGradient = ctx.createLinearGradient(0, 0, 0, view.h);
-  bgGradient.addColorStop(0,    '#182338');
-  bgGradient.addColorStop(0.55, '#0e1626');
-  bgGradient.addColorStop(1,    '#070c14');
+  /* Build bgGradient from the equipped theme */
+  applyActiveBg();
 
   computeLayout();
 }
 
-/* Game ab MENU se start hota hai (gameState = 'MENU').
-   startLevel(level) isliye rakha hai ke tubes[] khali na rahe. */
+/* Boot */
+loadShopProgress();          // MUST be before resize() so we build the right bg
+
 gameState = 'MENU';
 startLevel(level);
 resize();
@@ -1700,7 +1890,10 @@ window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 requestAnimationFrame(loop);
 
-console.log('[WaterSort] Booted. Menu first. Unlocked level ' + getUnlocked() + ' · Coins ' + coins);
+console.log('[WaterSort] Booted. Menu first. Unlocked level ' + getUnlocked() +
+            ' · Coins ' + coins +
+            ' · Active BG: ' + activeBg +
+            ' · Active Tube: ' + activeTube);
 
 })();
 </script>
