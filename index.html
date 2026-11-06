@@ -36,7 +36,7 @@ let bgGradient = null;
 /* ---------- 2. CONSTANTS ---------- */
 const CAP = 4;
 const SHAKE_DUR = 320;
-const TOTAL_LEVELS = 100;
+const TOTAL_LEVELS = 9999;
 const HINT_COST = 50;
 const TUBE_COST = 100;
 const MAX_TUBES = 10;
@@ -49,9 +49,9 @@ const COLORS = [
   { key:'yellow', hex:'#ffd60a' },
   { key:'purple', hex:'#bf5af2' },
   { key:'orange', hex:'#ff9f0a' },
-  { key:'cyan',   hex:'#40c8e0' },
-  { key:'pink',   hex:'#ff375f' },
-  { key:'lime',   hex:'#a3e635' }
+  { key:'cyan',   hex:'#00bcd4' },
+  { key:'pink',   hex:'#e91e63' },
+  { key:'lime',   hex:'#cddc39' }
 ];
 /* Safer than Object.fromEntries — works everywhere */
 const HEX = {};
@@ -63,7 +63,7 @@ COLORS.forEach(c => { HEX[c.key] = c.hex; });
 let level = (() => {
   try {
     const saved = parseInt(localStorage.getItem('watersort_level'), 10);
-    return (Number.isFinite(saved) && saved >= 1) ? saved : 1;
+    return (Number.isFinite(saved) && saved >= 1) ? Math.min(saved, TOTAL_LEVELS) : 1;
   } catch (e) { return 1; }
 })();
 
@@ -90,6 +90,7 @@ let gameState = 'MENU';          // 'MENU', 'LEVELS', 'PLAYING'
 let mapScroll = 0;               // level map scroll offset
 let mapMaxScroll = 0;
 let mapAutoScroll = false;       // LEVELS kholte waqt current level par scroll
+let showHelp = false;            // HOW TO PLAY overlay (main menu)
 
 let tubes = [];
 let initialTubes = [];
@@ -108,20 +109,20 @@ let toast = null;                // { text, t, dur } -> small message popup
 let coinRewardT = 0;             // animation timer for "+10 COINS" on win screen
 
 const layout = {
-  tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, musicBtn:null,
+  tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, replayBtn:null, musicBtn:null,
   coinBar:null, hintBtn:null, extraBtn:null
 };
-const ui = { playBtn:null, levelsBtn:null, backBtn:null, menuBtn:null, musicBtn:null, cells:[] };
+const ui = { playBtn:null, levelsBtn:null, helpBtn:null, helpClose:null, backBtn:null, menuBtn:null, musicBtn:null, cells:[] };
 
 /* Saved progress = highest unlocked level */
 function getUnlocked() {
   try {
     const s = parseInt(localStorage.getItem('watersort_level'), 10);
-    return (Number.isFinite(s) && s >= 1) ? s : 1;
+    return (Number.isFinite(s) && s >= 1) ? Math.min(s, TOTAL_LEVELS) : 1;
   } catch (e) { return 1; }
 }
 function saveProgress() {
-  const nxt = level + 1;
+  const nxt = Math.min(level + 1, TOTAL_LEVELS);
   if (nxt > getUnlocked()) {
     try { localStorage.setItem('watersort_level', String(nxt)); } catch (e) {}
   }
@@ -150,6 +151,24 @@ function vibrate(pattern) {
   if (navigator.vibrate) {
     try { navigator.vibrate(pattern); } catch (e) {}
   }
+}
+
+/* Word-wrap helper (uses the CURRENT ctx.font) */
+function wrapText(text, maxW) {
+  const words = String(text).split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const test = line ? line + ' ' + words[i] : words[i];
+    if (line && ctx.measureText(test).width > maxW) {
+      lines.push(line);
+      line = words[i];
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 /* ---------- 4b. TOAST ---------- */
@@ -563,7 +582,7 @@ function doReset() {
   playSelect();
 }
 function nextLevel() {
-  startLevel(level + 1);
+  startLevel(Math.min(level + 1, TOTAL_LEVELS));
 }
 
 /* ---------- 7a. HINT + EXTRA TUBE ---------- */
@@ -790,6 +809,12 @@ function handleTap(p) {
 
   /* ---- MAIN MENU ---- */
   if (gameState === 'MENU') {
+    /* Help overlay open: kisi bhi jagah tap (ya CLOSE) se band ho jaye */
+    if (showHelp) {
+      playSelect();
+      showHelp = false;
+      return;
+    }
     if (pointInRect(p, ui.musicBtn)) { toggleMusic(); return; }
     if (pointInRect(p, ui.playBtn)) {
       playSelect();
@@ -799,6 +824,9 @@ function handleTap(p) {
       playSelect();
       gameState = 'LEVELS';
       mapAutoScroll = true;
+    } else if (pointInRect(p, ui.helpBtn)) {
+      playSelect();
+      showHelp = true;
     }
     return;
   }
@@ -821,8 +849,9 @@ function handleTap(p) {
   /* ---- PLAYING ---- */
   if (pointInRect(p, layout.musicBtn)) { toggleMusic(); return; }
   if (won) {
-    if (pointInRect(p, layout.nextBtn)) { nextLevel(); return; }
-    if (pointInRect(p, ui.menuBtn))     { particles = []; toast = null; gameState = 'MENU'; return; }
+    if (pointInRect(p, layout.nextBtn))   { nextLevel(); return; }
+    if (pointInRect(p, layout.replayBtn)) { playSelect(); startLevel(level); return; }
+    if (pointInRect(p, ui.menuBtn))       { particles = []; toast = null; gameState = 'MENU'; return; }
     return;
   }
   if (pointInRect(p, ui.backBtn)) {
@@ -1128,7 +1157,7 @@ function drawButton(b, enabled) {
   ctx.strokeStyle = enabled ? 'rgba(160,210,255,0.45)' : 'rgba(255,255,255,0.14)';
   ctx.stroke();
   ctx.fillStyle = enabled ? '#dceaff' : 'rgba(220,234,255,0.32)';
-  ctx.font = '700 12.5px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.font = '800 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 0.5);
   ctx.restore();
@@ -1189,8 +1218,7 @@ function drawTube(i) {
     ctx.fillStyle = HEX[disp.fracColor] || '#888888';
     ctx.fillRect(innerX, cy - fh, innerW, fh + 0.6);
   }
-  ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.fillRect(innerX + innerW*0.12, y+wall, Math.max(3, innerW*0.14), h-2*wall);
+  /* (inner vertical line removed — empty tubes ab clean glass jaise dikhte hain) */
   ctx.restore();
 
   ctx.beginPath(); rr(ctx, x, y, w, h, radius);
@@ -1298,8 +1326,17 @@ function drawWinOverlay() {
   ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('NEXT LEVEL', W/2, layout.nextBtn.y + bh/2 + 1);
 
+  /* REPLAY (NEXT LEVEL aur MENU ke beech) */
+  layout.replayBtn = { x:(W-bw)/2, y:layout.nextBtn.y + bh + 12, w:bw, h:48 };
+  ctx.beginPath(); rr(ctx, layout.replayBtn.x, layout.replayBtn.y, bw, layout.replayBtn.h, 14);
+  ctx.fillStyle = 'rgba(74,168,255,0.22)'; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(143,230,255,0.55)'; ctx.stroke();
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '700 15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('REPLAY', W/2, layout.replayBtn.y + layout.replayBtn.h/2 + 1);
+
   /* MENU */
-  ui.menuBtn = { x:(W-bw)/2, y:H/2 + 8 + bh + 14, w:bw, h:48 };
+  ui.menuBtn = { x:(W-bw)/2, y:layout.replayBtn.y + layout.replayBtn.h + 12, w:bw, h:48 };
   ctx.beginPath(); rr(ctx, ui.menuBtn.x, ui.menuBtn.y, bw, ui.menuBtn.h, 14);
   ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fill();
   ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
@@ -1321,6 +1358,84 @@ function drawBigButton(b, label, c1, c2, textColor) {
   ctx.font = '800 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(label, b.x + b.w/2, b.y + b.h/2 + 1);
+  ctx.restore();
+}
+
+/* ----- HOW TO PLAY overlay ----- */
+function drawHelpOverlay() {
+  const W = view.w, H = view.h;
+  ctx.save();
+
+  /* dim background */
+  ctx.globalAlpha = 0.86;
+  ctx.fillStyle = '#050a14';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+
+  const paragraphs = [
+    'Tap a tube to select, then tap another to pour.',
+    'Sort all colors equally in their own tubes.',
+    'You can undo, reset, or buy hints and extra tubes.'
+  ];
+
+  const panelW = Math.min(340, W - 40);
+  const padIn = 22;
+  const textW = panelW - padIn*2;
+  const fontPx = 15, lineH = 22, paraGap = 12;
+  const font = '600 ' + fontPx + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+
+  ctx.font = font;
+  const wrapped = paragraphs.map(t => wrapText(t, textW));
+  let textH = 0;
+  for (let i = 0; i < wrapped.length; i++) {
+    textH += wrapped[i].length * lineH;
+    if (i < wrapped.length - 1) textH += paraGap;
+  }
+
+  const titleH = 34, titleGap = 16;
+  const closeH = 46, closeGap = 22;
+  const panelH = padIn + titleH + titleGap + textH + closeGap + closeH + padIn;
+  const px = (W - panelW) / 2;
+  const py = Math.max(16, (H - panelH) / 2);
+
+  /* panel */
+  ctx.beginPath(); rr(ctx, px, py, panelW, panelH, 22);
+  ctx.fillStyle = '#0e1626'; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
+
+  /* title */
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '800 22px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('HOW TO PLAY', W/2, py + padIn + titleH/2);
+
+  /* body text */
+  ctx.fillStyle = 'rgba(210,225,245,0.92)';
+  ctx.font = font;
+  let ty = py + padIn + titleH + titleGap + lineH/2;
+  for (let i = 0; i < wrapped.length; i++) {
+    for (let j = 0; j < wrapped[i].length; j++) {
+      ctx.fillText(wrapped[i][j], W/2, ty);
+      ty += lineH;
+    }
+    ty += paraGap;
+  }
+
+  /* CLOSE button */
+  const cbW = Math.min(180, panelW - padIn*2);
+  ui.helpClose = {
+    x: (W - cbW) / 2,
+    y: py + panelH - padIn - closeH,
+    w: cbW, h: closeH
+  };
+  const cg = ctx.createLinearGradient(0, ui.helpClose.y, 0, ui.helpClose.y + closeH);
+  cg.addColorStop(0, '#4aa8ff'); cg.addColorStop(1, '#2a78d6');
+  ctx.beginPath(); rr(ctx, ui.helpClose.x, ui.helpClose.y, cbW, closeH, 14);
+  ctx.fillStyle = cg; ctx.fill();
+  ctx.fillStyle = '#04162e';
+  ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('CLOSE', W/2, ui.helpClose.y + closeH/2 + 1);
+
   ctx.restore();
 }
 
@@ -1356,11 +1471,13 @@ function drawMainMenu() {
   }
 
   /* Buttons */
-  const bw = Math.min(260, W*0.7), bh = 60;
-  ui.playBtn   = { x:(W-bw)/2, y:H*0.44,         w:bw, h:bh };
-  ui.levelsBtn = { x:(W-bw)/2, y:H*0.44 + bh+18, w:bw, h:bh };
-  drawBigButton(ui.playBtn,   'PLAY',   '#3ddc84', '#1fae63', '#04220f');
-  drawBigButton(ui.levelsBtn, 'LEVELS', '#4aa8ff', '#2a78d6', '#04162e');
+  const bw = Math.min(260, W*0.7), bh = 60, bGap = 18;
+  ui.playBtn   = { x:(W-bw)/2, y:H*0.44,                     w:bw, h:bh };
+  ui.levelsBtn = { x:(W-bw)/2, y:H*0.44 + (bh+bGap),         w:bw, h:bh };
+  ui.helpBtn   = { x:(W-bw)/2, y:H*0.44 + (bh+bGap)*2,       w:bw, h:bh };
+  drawBigButton(ui.playBtn,   'PLAY',        '#3ddc84', '#1fae63', '#04220f');
+  drawBigButton(ui.levelsBtn, 'LEVELS',      '#4aa8ff', '#2a78d6', '#04162e');
+  drawBigButton(ui.helpBtn,   'HOW TO PLAY', '#b57bff', '#8a4fd6', '#1a0833');
 
   /* Music toggle (top right) */
   ui.musicBtn = { x: W - 16 - 46, y: 16, w: 46, h: 46 };
@@ -1372,7 +1489,9 @@ function drawMainMenu() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(180,200,225,0.55)';
   ctx.font = '600 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('Level ' + getUnlocked() + ' reached', W/2, H*0.44 + bh*2 + 52);
+  ctx.fillText('Level ' + getUnlocked() + ' reached', W/2, H*0.44 + (bh+bGap)*3 + 8);
+
+  if (showHelp) drawHelpOverlay();
 }
 
 function drawLock(cx, cy, s) {
@@ -1396,48 +1515,57 @@ function drawLevelMap() {
   const gridW = cols*cell + (cols-1)*gap;
   const startX = (W - gridW) / 2;
   const rows = Math.ceil(TOTAL_LEVELS / cols);
-  const contentH = rows*(cell+gap) + 20;
+  const rowStep = cell + gap;
+  const contentH = rows*rowStep + 20;
   const viewH = H - headerH;
 
   mapMaxScroll = Math.max(0, contentH - viewH);
   if (mapAutoScroll) {
     const row = Math.floor((Math.min(unlocked, TOTAL_LEVELS) - 1) / cols);
-    mapScroll = row*(cell+gap) - viewH/2 + cell/2;
+    mapScroll = row*rowStep - viewH/2 + cell/2;
     mapAutoScroll = false;
   }
   mapScroll = Math.max(0, Math.min(mapScroll, mapMaxScroll));
+
+  /* ---- PERFORMANCE: sirf screen par nazar aane wali rows render hoti hain ---- */
+  const firstRow = Math.max(0, Math.floor((mapScroll - 10 - cell) / rowStep));
+  const lastRow  = Math.min(rows - 1, Math.ceil((mapScroll + viewH) / rowStep));
 
   ui.cells = [];
   ctx.save();
   ctx.beginPath(); ctx.rect(0, headerH, W, viewH); ctx.clip();
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
 
-  for (let i = 1; i <= TOTAL_LEVELS; i++) {
-    const r = Math.floor((i-1) / cols), c = (i-1) % cols;
-    const x = startX + c*(cell+gap);
-    const y = headerH + 10 + r*(cell+gap) - mapScroll;
+  for (let r = firstRow; r <= lastRow; r++) {
+    const y = headerH + 10 + r*rowStep - mapScroll;
     if (y + cell < headerH || y > H) continue;
 
-    const open = i <= unlocked;
-    const current = i === unlocked;
+    for (let c = 0; c < cols; c++) {
+      const i = r*cols + c + 1;
+      if (i > TOTAL_LEVELS) break;
+      const x = startX + c*(cell+gap);
 
-    ctx.beginPath(); rr(ctx, x, y, cell, cell, 16);
-    if (current)   ctx.fillStyle = '#3ddc84';
-    else if (open) ctx.fillStyle = 'rgba(74,168,255,0.22)';
-    else           ctx.fillStyle = 'rgba(255,255,255,0.05)';
-    ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = current ? '#8fffc0' : open ? 'rgba(143,230,255,0.55)' : 'rgba(255,255,255,0.12)';
-    ctx.stroke();
+      const open = i <= unlocked;
+      const current = i === unlocked;
 
-    if (open) {
-      ctx.fillStyle = current ? '#04220f' : '#eaf2ff';
-      ctx.font = '800 ' + Math.round(cell*0.34) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(String(i), x + cell/2, y + cell/2 + 1);
-      ui.cells.push({ x, y, w:cell, h:cell, lv:i });
-    } else {
-      drawLock(x + cell/2, y + cell/2, cell*0.5);
+      ctx.beginPath(); rr(ctx, x, y, cell, cell, 16);
+      if (current)   ctx.fillStyle = '#3ddc84';
+      else if (open) ctx.fillStyle = 'rgba(74,168,255,0.22)';
+      else           ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = current ? '#8fffc0' : open ? 'rgba(143,230,255,0.55)' : 'rgba(255,255,255,0.12)';
+      ctx.stroke();
+
+      if (open) {
+        ctx.fillStyle = current ? '#04220f' : '#eaf2ff';
+        ctx.font = '800 ' + Math.round(cell*0.34) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(String(i), x + cell/2, y + cell/2 + 1);
+        ui.cells.push({ x, y, w:cell, h:cell, lv:i });
+      } else {
+        drawLock(x + cell/2, y + cell/2, cell*0.5);
+      }
     }
   }
   ctx.restore();
@@ -1448,7 +1576,11 @@ function drawLevelMap() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#eaf2ff';
   ctx.font = '800 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('SELECT LEVEL', W/2, headerH/2);
+  ctx.fillText('SELECT LEVEL', W/2, headerH/2 - 9);
+
+  ctx.fillStyle = 'rgba(180,200,225,0.7)';
+  ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('Unlocked: ' + unlocked, W/2, headerH/2 + 14);
 
   ui.backBtn = { x:16, y:(headerH-38)/2, w:78, h:38, label:'BACK' };
   drawButton(ui.backBtn, true);
