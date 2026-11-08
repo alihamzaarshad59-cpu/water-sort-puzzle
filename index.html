@@ -73,6 +73,14 @@ let musicEnabled = (() => {
   } catch (e) { return true; }
 })();
 
+/* SFX preference (default ON). Saved under 'watersort_sfx'. */
+let sfxEnabled = (() => {
+  try {
+    const v = localStorage.getItem('watersort_sfx');
+    return v === null ? true : (v === 'true' || v === '1');
+  } catch (e) { return true; }
+})();
+
 /* ---------- 3b. COINS ---------- */
 let coins = (() => {
   try {
@@ -162,9 +170,10 @@ let particles = [];              // confetti + bubble particles
 let hint = null;                 // { src, dst, t }  -> highlight for 2s
 let toast = null;                // { text, t, dur } -> small message popup
 let coinRewardT = 0;             // animation timer for "+10 COINS" on win screen
+let rewardGranted = false;       // true only if this win actually paid coins
 
 const layout = {
-  tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, replayBtn:null, musicBtn:null,
+  tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, replayBtn:null, musicBtn:null, sfxBtn:null,
   coinBar:null, hintBtn:null, extraBtn:null
 };
 const ui = { playBtn:null, levelsBtn:null, helpBtn:null, shopBtn:null, helpClose:null,
@@ -422,7 +431,8 @@ function drawMusicIcon(c, x, y, size, isEnabled) {
 }
 
 /* ---------- 5. LEVEL GEN ---------- */
-function colorsForLevel(lv) { return Math.min(4 + (lv-1), COLORS.length); }
+/* A new color every 3 levels (slower difficulty curve) */
+function colorsForLevel(lv) { return Math.min(4 + Math.floor((lv-1)/3), COLORS.length); }
 
 function shuffle(a) {
   for (let i = a.length-1; i > 0; i--) {
@@ -431,25 +441,80 @@ function shuffle(a) {
   }
   return a;
 }
-function isTriviallySorted(pool, nColors) {
-  for (let i = 0; i < nColors; i++) {
-    const s = i * CAP;
-    for (let k = 1; k < CAP; k++) if (pool[s+k] !== pool[s]) return false;
+
+/* True if every non-empty tube is full and a single color */
+function isSolvedState(ts) {
+  for (const t of ts) {
+    if (!t.length) continue;
+    if (t.length !== CAP) return false;
+    for (let i = 1; i < CAP; i++) if (t[i] !== t[0]) return false;
   }
   return true;
 }
+
+/* Checks whether moving the top color of `src` onto `dst` is a valid REVERSE
+   move, i.e. the exact inverse of a legal forward pour (dst -> src).
+   Returns the number of units (k) to move, or 0 if invalid. Truthy = valid. */
+function isValidPourBackwards(tubes, src, dst) {
+  if (src === dst) return 0;
+  const s = tubes[src], d = tubes[dst];
+  if (!s || !d || !s.length || d.length >= CAP) return 0;
+
+  const c = s[s.length - 1];
+  const run = topRunLength(s);
+  const ks = [];
+  for (let k = 1; k <= Math.min(run, CAP - d.length); k++) ks.push(k);
+  shuffle(ks);
+
+  for (const k of ks) {
+    const srcLeft = s.length - k;
+    /* forward pour (dst -> src) is only legal if src is empty or its top is c */
+    if (srcLeft > 0 && s[srcLeft - 1] !== c) continue;
+    /* moving a whole tube into an empty one is pointless */
+    if (srcLeft === 0 && d.length === 0) continue;
+
+    /* the forward pour must move exactly k units to be a true inverse */
+    const dTopRun = (d.length && d[d.length - 1] === c) ? topRunLength(d) : 0;
+    if (Math.min(k + dTopRun, CAP - srcLeft) !== k) continue;
+
+    /* forward source can't be an already-complete tube (canPour rule) */
+    if (dTopRun === d.length && d.length + k === CAP) continue;
+
+    return k;
+  }
+  return 0;
+}
+
 function generateTubes(lv) {
   const nColors = colorsForLevel(lv);
-  const pool = [];
-  for (let i = 0; i < nColors; i++) for (let k = 0; k < CAP; k++) pool.push(COLORS[i].key);
+  const emptyTubes = lv < 15 ? 2 : 1;
+  let last = null;
 
-  let guard = 0;
-  do { shuffle(pool); } while (isTriviallySorted(pool, nColors) && ++guard < 40);
+  for (let attempt = 0; attempt < 30; attempt++) {
+    /* a) fully sorted tubes + empty tubes */
+    const ts = [];
+    for (let i = 0; i < nColors; i++) ts.push(new Array(CAP).fill(COLORS[i].key));
+    for (let e = 0; e < emptyTubes; e++) ts.push([]);
 
-  const out = [];
-  for (let i = 0; i < nColors; i++) out.push(pool.slice(i*CAP, i*CAP+CAP));
-  out.push([], []);
-  return out;
+    /* c) 100-150 random valid reverse pours */
+    const target = 100 + Math.floor(Math.random() * 51);
+    let done = 0, fails = 0;
+    while (done < target && fails < 500) {
+      const src = Math.floor(Math.random() * ts.length);
+      const dst = Math.floor(Math.random() * ts.length);
+      const k = isValidPourBackwards(ts, src, dst);
+      if (!k) { fails++; continue; }
+      const color = ts[src][ts[src].length - 1];
+      for (let i = 0; i < k; i++) ts[src].pop();
+      for (let i = 0; i < k; i++) ts[dst].push(color);
+      done++;
+    }
+
+    last = ts;
+    /* d) never hand out an already-solved board */
+    if (!isSolvedState(ts)) return ts;
+  }
+  return last;
 }
 
 /* ---------- 6. LAYOUT ---------- */
@@ -490,12 +555,13 @@ function computeLayout() {
     }
   }
 
-  /* HUD buttons (top right): [UNDO] [RESET] [music] */
-  const btnH = 34, btnW = 56, btnGap = 6, hudPad = 12, musicW = 34;
+  /* HUD buttons (top right): [UNDO] [RESET] [SFX] [music] */
+  const btnH = 34, btnW = 48, btnGap = 4, hudPad = 8, musicW = 34, sfxW = 38;
   const btnY = (HUD_H - btnH)/2 + 4;
-  layout.musicBtn = { x: W - hudPad - musicW,                          y: btnY, w: musicW, h: btnH };
-  layout.resetBtn = { x: layout.musicBtn.x - btnGap - btnW,            y: btnY, w: btnW,   h: btnH, label:'RESET' };
-  layout.undoBtn  = { x: layout.resetBtn.x - btnGap - btnW,            y: btnY, w: btnW,   h: btnH, label:'UNDO'  };
+  layout.musicBtn = { x: W - hudPad - musicW,                 y: btnY, w: musicW, h: btnH };
+  layout.sfxBtn   = { x: layout.musicBtn.x - btnGap - sfxW,   y: btnY, w: sfxW,   h: btnH, label:'SFX',   fs:11 };
+  layout.resetBtn = { x: layout.sfxBtn.x - btnGap - btnW,     y: btnY, w: btnW,   h: btnH, label:'RESET', fs:12 };
+  layout.undoBtn  = { x: layout.resetBtn.x - btnGap - btnW,   y: btnY, w: btnW,   h: btnH, label:'UNDO',  fs:12 };
 
   /* Bottom action bar: [coins] [HINT] [TUBE] — centered */
   const barH = 46, barGap = 8, barPad = 16, coinW = 78;
@@ -514,14 +580,15 @@ function computeLayout() {
 function startLevel(lv) {
   level = lv;
   tubes = generateTubes(lv);
-  initialTubes = cloneTubes(tubes);
-  history = [];
+  initialTubes = cloneTubes(tubes);   // deep copy -> RESET works
+  history = [];                       // fresh UNDO stack
   selected = -1; anim = null; won = false; winProgress = 0; moves = 0;
   shakeT = 0; shakeIndex = -1;
   particles = [];
   hint = null;
   toast = null;
   coinRewardT = 0;
+  rewardGranted = false;
   if (view.w > 0) computeLayout();
 }
 
@@ -580,13 +647,24 @@ function checkWin() {
   if (won) return;
   if (isWin()) {
     won = true; winProgress = 0; coinRewardT = 0;
+    rewardGranted = false;
     saveProgress();
     playWin();
     spawnConfetti();
     vibrate([100, 50, 100, 50, 300]);
 
-    coins += WIN_COINS;
-    saveCoins();
+    /* Coins only once per level (anti-farming) */
+    const key = 'watersort_completed_' + level;
+    let alreadyDone = false;
+    try { alreadyDone = localStorage.getItem(key) !== null; } catch (e) {}
+
+    if (!alreadyDone) {
+      try { localStorage.setItem(key, 'true'); } catch (e) {}
+      coins += WIN_COINS;
+      saveCoins();
+      rewardGranted = true;
+      setTimeout(playCoin, 520);      // coin sound after the win jingle
+    }
   }
 }
 function doUndo() {
@@ -819,6 +897,12 @@ function toggleMusic() {
   if (musicEnabled) { initAudio(); startBGM(); playSelect(); }
   else stopBGM();
 }
+function toggleSfx() {
+  sfxEnabled = !sfxEnabled;
+  try { localStorage.setItem('watersort_sfx', String(sfxEnabled)); } catch (e) {}
+  initAudio();
+  if (sfxEnabled) playSelect();      // test sound (silent when turned off)
+}
 function handleTap(p) {
   initAudio();
   if (musicEnabled) startBGM();
@@ -913,6 +997,7 @@ function handleTap(p) {
 
   /* ---- PLAYING ---- */
   if (pointInRect(p, layout.musicBtn)) { toggleMusic(); return; }
+  if (pointInRect(p, layout.sfxBtn))   { toggleSfx();   return; }
   if (won) {
     if (pointInRect(p, layout.nextBtn))   { nextLevel(); return; }
     if (pointInRect(p, layout.replayBtn)) { playSelect(); startLevel(level); return; }
@@ -991,6 +1076,7 @@ function initAudio() {
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 }
 function tone(freq, dur, type='sine', vol=0.05, slideTo=null) {
+  if (!sfxEnabled) return;
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
   const osc = audioCtx.createOscillator();
@@ -1190,17 +1276,19 @@ function drawBarButton(b, iconType, label, sub, enabled, affordable) {
 }
 
 function drawHUD() {
+  const maxTextW = Math.max(40, layout.undoBtn.x - 88 - 6);
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#eaf2ff';
-  ctx.font = '800 18px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('LEVEL ' + level, 88, 30);
+  ctx.font = '800 17px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('LEVEL ' + level, 88, 30, maxTextW);
 
   ctx.fillStyle = 'rgba(180,200,225,0.65)';
   ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText('MOVES  ' + moves, 88, 52);
+  ctx.fillText('MOVES  ' + moves, 88, 52, maxTextW);
 
   drawButton(layout.undoBtn, history.length > 0 && !won);
   drawButton(layout.resetBtn, !won);
+  drawButton(layout.sfxBtn, sfxEnabled);       // dim = SFX off
   drawMusicBtn(layout.musicBtn);
 }
 function drawButton(b, enabled) {
@@ -1213,7 +1301,7 @@ function drawButton(b, enabled) {
   ctx.strokeStyle = enabled ? 'rgba(160,210,255,0.45)' : 'rgba(255,255,255,0.14)';
   ctx.stroke();
   ctx.fillStyle = enabled ? '#dceaff' : 'rgba(220,234,255,0.32)';
-  ctx.font = '800 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.font = '800 ' + (b.fs || 14) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 0.5);
   ctx.restore();
@@ -1340,27 +1428,35 @@ function drawWinOverlay() {
   ctx.font = '600 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('Level ' + level + ' solved in ' + moves + ' moves', W/2, H/2 - 58);
 
+  /* ---- reward line ---- */
   ctx.save();
   const cA = Math.min(1, coinRewardT * 2.4);
   ctx.globalAlpha = a * Math.max(0, Math.min(1, cA));
   const rise = easeInOutQuad(Math.min(1, coinRewardT)) * 12;
   const rewardY = H/2 - 26 - rise;
-  const rewardText = '+' + WIN_COINS + ' COINS';
 
-  ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  const rtw = ctx.measureText(rewardText).width;
-  const rIconR = 8, rGap = 7;
-  const rTotal = rtw + rGap + rIconR * 2;
-  const rStart = W/2 - rTotal / 2;
+  if (rewardGranted) {
+    const rewardText = '+' + WIN_COINS + ' COINS';
+    ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    const rtw = ctx.measureText(rewardText).width;
+    const rIconR = 8, rGap = 7;
+    const rTotal = rtw + rGap + rIconR * 2;
+    const rStart = W/2 - rTotal / 2;
 
-  ctx.fillStyle = '#ffd60a';
-  ctx.shadowColor = 'rgba(255,214,10,0.85)';
-  ctx.shadowBlur = 16;
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillText(rewardText, rStart, rewardY);
+    ctx.fillStyle = '#ffd60a';
+    ctx.shadowColor = 'rgba(255,214,10,0.85)';
+    ctx.shadowBlur = 16;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(rewardText, rStart, rewardY);
 
-  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
-  drawCoinIcon(ctx, rStart + rtw + rGap + rIconR, rewardY, rIconR);
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+    drawCoinIcon(ctx, rStart + rtw + rGap + rIconR, rewardY, rIconR);
+  } else {
+    ctx.font = '700 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.fillStyle = 'rgba(190,215,240,0.65)';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('Already Claimed', W/2, rewardY);
+  }
   ctx.restore();
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
