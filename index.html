@@ -86,6 +86,18 @@ let sfxEnabled = (() => {
 /* Settings overlay */
 let showSettings = false;
 
+/* ---- Rate Us prompt state ---- */
+let showRatePrompt = false;                 // true -> overlay drawn over the win screen
+let rated = (() => {                        // set once the player taps RATE NOW
+  try { return localStorage.getItem('watersort_rated') === 'true'; } catch (e) { return false; }
+})();
+let ratePromptLevelSeen = (() => {          // highest level we already asked at
+  try {
+    const v = parseInt(localStorage.getItem('watersort_rate_prompted_level'), 10);
+    return (Number.isFinite(v) && v >= 0) ? v : 0;
+  } catch (e) { return 0; }
+})();
+
 /* Screen transition alpha (1 = fully visible, 0 = fully black) */
 let transitionAlpha = 1;
 
@@ -347,6 +359,7 @@ const ui = { playBtn:null, levelsBtn:null, helpBtn:null, shopBtn:null, dailyBtn:
              helpClose:null, backBtn:null, menuBtn:null, settingsBtn:null,
              settingsCloseBtn:null, musicToggle:null, sfxToggle:null, cells:[] };
 const achUI = { backBtn:null };
+const rateUI = { nowBtn:null, laterBtn:null };   // hit-rects for the Rate Us overlay
 
 /* Saved progress = highest unlocked level */
 function getUnlocked() {
@@ -360,6 +373,36 @@ function saveProgress() {
   if (nxt > getUnlocked()) {
     try { localStorage.setItem('watersort_level', String(nxt)); } catch (e) {}
   }
+}
+
+/* ---------- 3i. RATE US PROMPT ---------- */
+/* Asked after Level 10; if the player taps LATER it can ask again at Level 25.
+   After RATE NOW the `watersort_rated` flag stops it forever. */
+const RATE_PROMPT_LEVELS = [10, 25];
+
+/* Placeholder hook for the Capacitor In-App Review plugin. */
+function triggerNativeReview() {
+  try {
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.InAppReview &&
+        typeof window.Capacitor.Plugins.InAppReview.requestReview === 'function') {
+      window.Capacitor.Plugins.InAppReview.requestReview();
+    } else {
+      /* Plain browser / PWA — hook your store listing URL here later. */
+      console.log('[Rate] Native review unavailable; would open the store listing.');
+    }
+  } catch (e) {
+    console.warn('[Rate] Native review failed:', e);
+  }
+}
+
+/* Called only on a NORMAL level win (never for the Daily Challenge). */
+function maybePromptRate(lv) {
+  if (rated) return;
+  if (RATE_PROMPT_LEVELS.indexOf(lv) === -1) return;
+  if (ratePromptLevelSeen >= lv) return;      // already asked at this milestone
+  ratePromptLevelSeen = lv;
+  try { localStorage.setItem('watersort_rate_prompted_level', String(lv)); } catch (e) {}
+  showRatePrompt = true;
 }
 
 /* ---------- 4. HELPERS ---------- */
@@ -901,6 +944,7 @@ function initBoard(ts) {
   particles = [];
   hint = null;
   toast = null;
+  showRatePrompt = false;             // any new board dismisses the prompt state
   coinRewardT = 0;
   rewardGranted = false;
   rewardAmount = WIN_COINS;
@@ -1006,6 +1050,9 @@ function checkWin() {
     } else {
       saveProgress();
 
+      /* ---- Rate Us: pause the win screen after Level 10 (again at 25 if LATER) ---- */
+      maybePromptRate(level);
+
       /* Coins only once per level (anti-farming) */
       const key = 'watersort_completed_' + level;
       let alreadyDone = false;
@@ -1040,6 +1087,7 @@ function doReset() {
   history = []; selected = -1; won = false; winProgress = 0; moves = 0; shakeT = 0;
   particles = [];
   hint = null; coinRewardT = 0;
+  showRatePrompt = false;
   if (layout.tubes.length !== tubes.length) computeLayout();
   playSelect();
 }
@@ -1268,6 +1316,27 @@ function handleTap(p) {
 
   initAudio();
   if (musicEnabled) startBGM();
+
+  /* ========================================================
+     RATE US PROMPT — intercepts all taps when open
+     ======================================================== */
+  if (showRatePrompt) {
+    if (pointInRect(p, rateUI.nowBtn)) {
+      playSelect();
+      rated = true;
+      try { localStorage.setItem('watersort_rated', 'true'); } catch (e) {}
+      triggerNativeReview();
+      showRatePrompt = false;
+      showToast('Thanks for rating! ⭐', 2400);
+      return;
+    }
+    if (pointInRect(p, rateUI.laterBtn)) {
+      playSelect();
+      showRatePrompt = false;          // flag stays false -> may ask again at Level 25
+      return;
+    }
+    return; // consume all other taps (win screen stays paused behind the overlay)
+  }
 
   /* ========================================================
      SETTINGS OVERLAY — intercepts all taps when open
@@ -2050,6 +2119,68 @@ function drawWinOverlay() {
   ctx.restore();
 }
 
+/* ---------- RATE US PROMPT (custom canvas overlay over the win screen) ---------- */
+function drawRatePrompt() {
+  const W = view.w, H = view.h;
+  const fam = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.save();
+
+  /* Dim everything behind — the win screen stays visible underneath */
+  ctx.fillStyle = 'rgba(5,10,20,0.86)';
+  ctx.fillRect(0, 0, W, H);
+
+  /* Panel */
+  const panelW = Math.min(340, W - 40);
+  const panelH = 268;
+  const px = (W - panelW) / 2;
+  const py = Math.max(16, (H - panelH) / 2);
+
+  ctx.beginPath(); rr(ctx, px, py, panelW, panelH, 22);
+  ctx.fillStyle = '#0e1626'; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
+
+  /* Message */
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '800 21px ' + fam;
+  ctx.fillText('Enjoying the game?', W/2, py + 46, panelW - 40);
+
+  ctx.fillStyle = '#ffd60a';
+  ctx.font = '700 16px ' + fam;
+  ctx.fillText('Please rate us!  ⭐⭐⭐⭐⭐', W/2, py + 82, panelW - 40);
+
+  ctx.fillStyle = 'rgba(190,215,240,0.72)';
+  ctx.font = '600 13px ' + fam;
+  ctx.fillText('Your rating helps us improve.', W/2, py + 108, panelW - 40);
+
+  /* Buttons */
+  const btnW = panelW - 48;
+  const btnH = 50;
+  const nowY = py + 130;
+  const laterY = nowY + btnH + 12;
+
+  /* RATE NOW */
+  rateUI.nowBtn = { x: px + 24, y: nowY, w: btnW, h: btnH };
+  const g = ctx.createLinearGradient(0, nowY, 0, nowY + btnH);
+  g.addColorStop(0, '#3ddc84'); g.addColorStop(1, '#1fae63');
+  ctx.beginPath(); rr(ctx, rateUI.nowBtn.x, nowY, btnW, btnH, 14);
+  ctx.fillStyle = g; ctx.fill();
+  ctx.fillStyle = '#04220f';
+  ctx.font = '800 16px ' + fam;
+  ctx.fillText('RATE NOW', W/2, nowY + btnH/2 + 1);
+
+  /* LATER */
+  rateUI.laterBtn = { x: px + 24, y: laterY, w: btnW, h: btnH };
+  ctx.beginPath(); rr(ctx, rateUI.laterBtn.x, laterY, btnW, btnH, 14);
+  ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,210,255,0.45)'; ctx.stroke();
+  ctx.fillStyle = '#dceaff';
+  ctx.font = '700 15px ' + fam;
+  ctx.fillText('LATER', W/2, laterY + btnH/2 + 1);
+
+  ctx.restore();
+}
+
 /* Mock Ad Overlay */
 function drawMockAd() {
   const W = view.w, H = view.h;
@@ -2817,6 +2948,9 @@ function render() {
   drawParticles();
   if (gameState !== 'LEVELS') drawToast();
 
+  /* Rate Us overlay — drawn on top of the win screen */
+  if (showRatePrompt) drawRatePrompt();
+
   /* Settings overlay on top of everything */
   if (showSettings) drawSettingsOverlay();
 
@@ -2925,7 +3059,8 @@ console.log('[WaterSort] Booted. Menu first. Unlocked level ' + getUnlocked() +
             ' · Coins ' + coins +
             ' · Active BG: ' + activeBg +
             ' · Active Tube: ' + activeTube +
-            ' · Ads removed: ' + adsRemoved);
+            ' · Ads removed: ' + adsRemoved +
+            ' · Rated: ' + rated);
 
 })();
 </script>
