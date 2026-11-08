@@ -93,6 +93,26 @@ let transitionAlpha = 1;
 let squashT = 0;
 let squashTubeIdx = -1;
 
+/* ---------- 3a. MOCK REWARDED ADS + IAP STATE ---------- */
+let adsRemoved = (() => {
+  try { return localStorage.getItem('watersort_ads_removed') === 'true'; } catch (e) { return false; }
+})();
+function saveAdsRemoved() {
+  try { localStorage.setItem('watersort_ads_removed', String(adsRemoved)); } catch (e) {}
+}
+
+let mockAdActive = false;
+let mockAdTimer = 0;
+let mockAdCallback = null;
+
+/* Rewarded ad entry-point. If ads are removed, the reward is granted instantly. */
+function showRewardedAd(callback) {
+  if (adsRemoved) { try { callback(); } catch (e) {} return; }
+  mockAdActive = true;
+  mockAdTimer = 3;
+  mockAdCallback = callback;
+}
+
 /* ---------- 3b. COINS ---------- */
 let coins = (() => {
   try {
@@ -129,17 +149,19 @@ function addCoins(n) {
 const SHOP_BGS = [
   { id: 'default', name: 'Midnight', cost: 0,    colors: ['#182338', '#0e1626', '#070c14'] },
   { id: 'sunset',  name: 'Sunset',   cost: 500,  colors: ['#2b1055', '#75225c', '#1e0b2d'] },
-  { id: 'matrix',  name: 'Matrix',   cost: 1000, colors: ['#0a1c0e', '#051208', '#020603'] }
+  { id: 'matrix',  name: 'Matrix',   cost: 1000, colors: ['#0a1c0e', '#051208', '#020603'] },
+  { id: 'ocean',   name: 'Ocean',    cost: 1200, colors: ['#0a3d5c', '#0e6b8a', '#052a3d'] }
 ];
 const SHOP_TUBES = [
   { id: 'default', name: 'Glass', cost: 0,    border: 'rgba(200,225,255,0.48)', fill: 'rgba(255,255,255,0.06)' },
   { id: 'neon',    name: 'Neon',  cost: 800,  border: '#ff007f',                fill: 'rgba(255,0,127,0.08)'   },
-  { id: 'wood',    name: 'Wood',  cost: 1500, border: '#8b5a2b',                fill: 'rgba(139,90,43,0.15)'   }
+  { id: 'wood',    name: 'Wood',  cost: 1500, border: '#8b5a2b',                fill: 'rgba(139,90,43,0.15)'   },
+  { id: 'crystal', name: 'Crystal', cost: 2000, border: 'rgba(200,255,255,0.92)', fill: 'rgba(150,255,255,0.18)' }
 ];
 
 let ownedBgs   = ['default'], activeBg   = 'default';
 let ownedTubes = ['default'], activeTube = 'default';
-let shopTab = 'bgs';                             // 'bgs' | 'tubes'
+let shopTab = 'bgs';                             // 'bgs' | 'tubes' | 'special'
 const shopUI = { tabs:{}, cards:[], backBtn:null };
 
 /* ---------- 3d. SHOP PERSISTENCE ---------- */
@@ -315,10 +337,11 @@ let toast = null;                // { text, t, dur } -> small message popup
 let coinRewardT = 0;             // animation timer for "+10 COINS" on win screen
 let rewardGranted = false;       // true only if this win actually paid coins
 let rewardAmount = WIN_COINS;    // amount shown on the win screen
+let doubleCoinsClaimed = false;  // guards against watching the ad twice on one win
 
 const layout = {
   tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, replayBtn:null, settingsBtn:null,
-  coinBar:null, hintBtn:null, extraBtn:null
+  coinBar:null, hintBtn:null, extraBtn:null, doubleCoinsBtn:null
 };
 const ui = { playBtn:null, levelsBtn:null, helpBtn:null, shopBtn:null, dailyBtn:null, achBtn:null,
              helpClose:null, backBtn:null, menuBtn:null, settingsBtn:null,
@@ -881,6 +904,7 @@ function initBoard(ts) {
   coinRewardT = 0;
   rewardGranted = false;
   rewardAmount = WIN_COINS;
+  doubleCoinsClaimed = false;
   squashT = 0;
   squashTubeIdx = -1;
   if (view.w > 0) computeLayout();
@@ -955,6 +979,7 @@ function checkWin() {
     won = true; winProgress = 0; coinRewardT = 0;
     rewardGranted = false;
     rewardAmount = WIN_COINS;
+    doubleCoinsClaimed = false;
 
     /* ---- stats ---- */
     stats.totalWins++;
@@ -1238,6 +1263,9 @@ function toggleSfx() {
 }
 
 function handleTap(p) {
+  /* Mock ad is playing — swallow every tap. */
+  if (mockAdActive) return;
+
   initAudio();
   if (musicEnabled) startBGM();
 
@@ -1306,9 +1334,28 @@ function handleTap(p) {
       if (shopTab !== 'tubes') { playSelect(); shopTab = 'tubes'; }
       return;
     }
+    if (pointInRect(p, shopUI.tabs.special)) {
+      if (shopTab !== 'special') { playSelect(); shopTab = 'special'; }
+      return;
+    }
     for (let i = 0; i < shopUI.cards.length; i++) {
       const card = shopUI.cards[i];
       if (!pointInRect(p, card)) continue;
+
+      /* Special "Remove Ads" card */
+      if (card.special) {
+        if (!adsRemoved) {
+          adsRemoved = true;
+          saveAdsRemoved();
+          playCoin(); vibrate(25);
+          showToast('Ads Removed! Thank you for your support.', 3000);
+          checkAchievements();
+        } else {
+          playSelect();
+        }
+        return;
+      }
+
       const item = card.item;
 
       if (card.equipped) { playSelect(); return; }
@@ -1365,6 +1412,19 @@ function handleTap(p) {
   /* ---- PLAYING ---- */
   if (pointInRect(p, layout.settingsBtn)) { playSelect(); showSettings = true; return; }
   if (won) {
+    /* Double Coins (rewarded ad) — only once per win */
+    if (pointInRect(p, layout.doubleCoinsBtn)) {
+      if (!doubleCoinsClaimed && !mockAdActive) {
+        showRewardedAd(() => {
+          addCoins(rewardAmount);
+          rewardAmount *= 2;
+          doubleCoinsClaimed = true;
+          layout.doubleCoinsBtn = null;
+          showToast('+2x Coins Granted!', 2400);
+        });
+      }
+      return;
+    }
     if (pointInRect(p, layout.nextBtn)) {
       if (isDaily) { particles = []; toast = null; goToState('MENU'); }
       else nextLevel();
@@ -1384,8 +1444,23 @@ function handleTap(p) {
   if (anim) return;
   if (pointInRect(p, layout.undoBtn))  { doUndo();  return; }
   if (pointInRect(p, layout.resetBtn)) { doReset(); return; }
-  if (pointInRect(p, layout.hintBtn))  { useHint();      return; }
-  if (pointInRect(p, layout.extraBtn)) { buyExtraTube(); return; }
+  if (pointInRect(p, layout.hintBtn)) {
+    if (!won && !anim && coins < HINT_COST && !adsRemoved) {
+      showRewardedAd(() => { coins += HINT_COST; saveCoins(); useHint(); });
+    } else {
+      useHint();
+    }
+    return;
+  }
+  if (pointInRect(p, layout.extraBtn)) {
+    const canAddTube = tubes.length < MAX_TUBES;
+    if (!won && !anim && canAddTube && coins < TUBE_COST && !adsRemoved) {
+      showRewardedAd(() => { coins += TUBE_COST; saveCoins(); buyExtraTube(); });
+    } else {
+      buyExtraTube();
+    }
+    return;
+  }
 
   const idx = tubeAtPoint(p);
   if (idx < 0) { selected = -1; return; }
@@ -1411,7 +1486,7 @@ let ptr = null;
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   const p = getPointerPos(e);
-  if (gameState === 'LEVELS' && !showSettings) {
+  if (gameState === 'LEVELS' && !showSettings && !mockAdActive) {
     ptr = { startY:p.y, lastY:p.y, moved:false };
   } else {
     handleTap(p);
@@ -1647,6 +1722,26 @@ function drawBarButton(b, iconType, label, sub, enabled, affordable) {
   ctx.restore();
 }
 
+/* Small "FREE" tag pill for the bottom bar buttons (ad-supported). */
+function drawFreeTag(b) {
+  if (!b) return;
+  const tagW = 34, tagH = 15;
+  const tx = b.x + b.w - tagW - 4;
+  const ty = b.y - tagH/2;
+  ctx.save();
+  ctx.beginPath(); rr(ctx, tx, ty, tagW, tagH, tagH/2);
+  ctx.fillStyle = '#3ddc84';
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(4,34,15,0.45)';
+  ctx.stroke();
+  ctx.fillStyle = '#04220f';
+  ctx.font = '800 9.5px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('FREE', tx + tagW/2, ty + tagH/2 + 0.5);
+  ctx.restore();
+}
+
 function drawHUD() {
   const maxTextW = Math.max(40, layout.undoBtn.x - 88 - 6);
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -1799,6 +1894,10 @@ function drawTube(i) {
     ctx.lineWidth = 3; ctx.strokeStyle = '#8fe6ff';
   } else {
     ctx.lineWidth = 2; ctx.strokeStyle = skin.border;
+    if (activeTube === 'crystal') {
+      ctx.shadowColor = 'rgba(150,255,255,0.75)';
+      ctx.shadowBlur = 12;
+    }
   }
   ctx.stroke();
   ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
@@ -1906,6 +2005,25 @@ function drawWinOverlay() {
   ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText(isDaily ? 'BACK TO MENU' : 'NEXT LEVEL', W/2, layout.nextBtn.y + bh/2 + 1);
 
+  /* ---- Double Coins (rewarded ad) ---- */
+  let extraShift = 0;
+  if (rewardGranted && !adsRemoved && !doubleCoinsClaimed) {
+    const dbh = 42, dbw = bw;
+    layout.doubleCoinsBtn = { x:(W-dbw)/2, y: layout.nextBtn.y + bh + 10, w:dbw, h:dbh };
+    const dg = ctx.createLinearGradient(0, layout.doubleCoinsBtn.y, 0, layout.doubleCoinsBtn.y + dbh);
+    dg.addColorStop(0, '#ffd60a'); dg.addColorStop(1, '#ff9500');
+    ctx.beginPath(); rr(ctx, layout.doubleCoinsBtn.x, layout.doubleCoinsBtn.y, dbw, dbh, 12);
+    ctx.fillStyle = dg; ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,240,160,0.7)'; ctx.stroke();
+    ctx.fillStyle = '#2b1300';
+    ctx.font = '800 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('WATCH AD: 2X COINS', W/2, layout.doubleCoinsBtn.y + dbh/2 + 1);
+    extraShift = dbh + 10;
+  } else {
+    layout.doubleCoinsBtn = null;
+  }
+
   if (isDaily) {
     layout.replayBtn = null;
     ui.menuBtn = null;
@@ -1913,7 +2031,7 @@ function drawWinOverlay() {
     return;
   }
 
-  layout.replayBtn = { x:(W-bw)/2, y:layout.nextBtn.y + bh + 12, w:bw, h:48 };
+  layout.replayBtn = { x:(W-bw)/2, y:layout.nextBtn.y + bh + 12 + extraShift, w:bw, h:48 };
   ctx.beginPath(); rr(ctx, layout.replayBtn.x, layout.replayBtn.y, bw, layout.replayBtn.h, 14);
   ctx.fillStyle = 'rgba(74,168,255,0.22)'; ctx.fill();
   ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(143,230,255,0.55)'; ctx.stroke();
@@ -1928,6 +2046,35 @@ function drawWinOverlay() {
   ctx.fillStyle = '#dceaff';
   ctx.font = '700 15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('MENU', W/2, ui.menuBtn.y + ui.menuBtn.h/2 + 1);
+
+  ctx.restore();
+}
+
+/* Mock Ad Overlay */
+function drawMockAd() {
+  const W = view.w, H = view.h;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.96)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 30px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('WATCHING AD...', W/2, H/2 - 42);
+
+  ctx.fillStyle = '#ffd60a';
+  ctx.font = '700 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const secs = Math.max(1, Math.ceil(mockAdTimer));
+  ctx.fillText('Reward in ' + secs + 's...', W/2, H/2 + 16);
+
+  /* Simple progress bar */
+  const bw = Math.min(240, W - 80), bh = 8;
+  const bx = (W - bw) / 2, by = H/2 + 56;
+  ctx.beginPath(); rr(ctx, bx, by, bw, bh, bh/2);
+  ctx.fillStyle = 'rgba(255,255,255,0.16)'; ctx.fill();
+  const p = Math.max(0, Math.min(1, 1 - mockAdTimer / 3));
+  ctx.beginPath(); rr(ctx, bx, by, bw * p, bh, bh/2);
+  ctx.fillStyle = '#3ddc84'; ctx.fill();
 
   ctx.restore();
 }
@@ -2339,13 +2486,14 @@ function drawShop() {
   /* Coins (top-right) */
   drawCoinPill(W - 16 - 96, 15, 96, 46);
 
-  /* Tabs */
-  const tabY = 92, tabH = 42, tabGap = 10, tabPadX = 16;
-  const tabW = (W - tabPadX*2 - tabGap) / 2;
-  shopUI.tabs.bgs   = { x: tabPadX,                 y: tabY, w: tabW, h: tabH, id:'bgs',   label:'BACKGROUNDS' };
-  shopUI.tabs.tubes = { x: tabPadX + tabW + tabGap, y: tabY, w: tabW, h: tabH, id:'tubes', label:'TUBE SKINS'  };
+  /* Tabs (3) */
+  const tabY = 92, tabH = 42, tabGap = 8, tabPadX = 12;
+  const tabW = (W - tabPadX*2 - tabGap*2) / 3;
+  shopUI.tabs.bgs     = { x: tabPadX,                       y: tabY, w: tabW, h: tabH, id:'bgs',     label:'BG'      };
+  shopUI.tabs.tubes   = { x: tabPadX + tabW + tabGap,       y: tabY, w: tabW, h: tabH, id:'tubes',   label:'TUBES'   };
+  shopUI.tabs.special = { x: tabPadX + (tabW+tabGap)*2,     y: tabY, w: tabW, h: tabH, id:'special', label:'SPECIAL' };
 
-  [shopUI.tabs.bgs, shopUI.tabs.tubes].forEach(tab => {
+  [shopUI.tabs.bgs, shopUI.tabs.tubes, shopUI.tabs.special].forEach(tab => {
     const active = shopTab === tab.id;
     ctx.beginPath(); rr(ctx, tab.x, tab.y, tab.w, tab.h, 12);
     ctx.fillStyle = active ? 'rgba(74,168,255,0.32)' : 'rgba(255,255,255,0.06)';
@@ -2359,15 +2507,81 @@ function drawShop() {
     ctx.fillText(tab.label, tab.x + tab.w/2, tab.y + tab.h/2 + 1);
   });
 
-  /* Grid */
-  const items   = shopTab === 'bgs' ? SHOP_BGS : SHOP_TUBES;
   const gridTop = tabY + tabH + 22;
   const padX = 16, gap = 14;
+
+  shopUI.cards = [];
+
+  /* --- SPECIAL tab --- */
+  if (shopTab === 'special') {
+    const cardW = Math.min(W - padX*2, 360);
+    const cardX = (W - cardW) / 2;
+    const cardY = gridTop;
+    const cardH = Math.max(180, Math.min(220, H - cardY - 20));
+
+    ctx.beginPath(); rr(ctx, cardX, cardY, cardW, cardH, 18);
+    if (adsRemoved) {
+      ctx.fillStyle = 'rgba(61,220,132,0.14)';
+      ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(61,220,132,0.75)';
+    } else {
+      ctx.fillStyle = 'rgba(255,179,71,0.10)';
+      ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,179,71,0.75)';
+    }
+    ctx.stroke();
+
+    const iconY = cardY + 42;
+    if (adsRemoved) {
+      drawTrophyIcon(ctx, W/2, iconY, 42, '#3ddc84');
+    } else {
+      /* Blocked ad symbol */
+      ctx.save();
+      ctx.strokeStyle = '#ffd60a';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(W/2, iconY, 18, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(W/2 - 13, iconY - 13); ctx.lineTo(W/2 + 13, iconY + 13); ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = adsRemoved ? '#3ddc84' : '#ffd60a';
+    ctx.font = '800 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.fillText(adsRemoved ? 'ADS REMOVED' : 'REMOVE ADS', W/2, cardY + 88);
+
+    ctx.fillStyle = 'rgba(220,234,255,0.75)';
+    ctx.font = '600 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    const desc = adsRemoved
+      ? 'Thank you for your support!'
+      : 'No more ads. Rewards granted instantly.';
+    ctx.fillText(desc, W/2, cardY + 112, cardW - 30);
+
+    if (adsRemoved) {
+      ctx.fillStyle = '#3ddc84';
+      ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+      ctx.fillText('PURCHASED  ✓', W/2, cardY + cardH - 26);
+    } else {
+      const btnW = Math.min(180, cardW - 40), btnH = 40;
+      const btnX = (W - btnW) / 2, btnY = cardY + cardH - 20 - btnH;
+      const pg = ctx.createLinearGradient(0, btnY, 0, btnY + btnH);
+      pg.addColorStop(0, '#ffd60a'); pg.addColorStop(1, '#ff9500');
+      ctx.beginPath(); rr(ctx, btnX, btnY, btnW, btnH, 12);
+      ctx.fillStyle = pg; ctx.fill();
+      ctx.fillStyle = '#2b1300';
+      ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+      ctx.fillText('$1.99', W/2, btnY + btnH/2 + 1);
+    }
+
+    shopUI.cards.push({ x: cardX, y: cardY, w: cardW, h: cardH, special: true });
+    return;
+  }
+
+  /* --- Grid (bgs/tubes) --- */
+  const items   = shopTab === 'bgs' ? SHOP_BGS : SHOP_TUBES;
   const cols  = W >= 480 ? 3 : 2;
   const cardW = (W - padX*2 - (cols-1)*gap) / cols;
   const cardH = Math.min(160, cardW * 1.05);
 
-  shopUI.cards = [];
   items.forEach((item, i) => {
     const col = i % cols;
     const row = Math.floor(i / cols);
@@ -2554,6 +2768,12 @@ function drawPlaying() {
   drawBarButton(layout.hintBtn,  'hint', 'HINT', String(HINT_COST), !won, coins >= HINT_COST);
   drawBarButton(layout.extraBtn, 'tube', 'TUBE', String(TUBE_COST), !won && tubes.length < MAX_TUBES, coins >= TUBE_COST);
 
+  /* Ad-supported FREE tags */
+  if (!won && !adsRemoved) {
+    if (coins < HINT_COST) drawFreeTag(layout.hintBtn);
+    if (coins < TUBE_COST && tubes.length < MAX_TUBES) drawFreeTag(layout.extraBtn);
+  }
+
   if (won) drawWinOverlay();
 }
 
@@ -2608,10 +2828,25 @@ function render() {
     ctx.fillRect(0, 0, view.w, view.h);
     ctx.restore();
   }
+
+  /* Mock ad overlay — must be the LAST thing drawn */
+  if (mockAdActive) drawMockAd();
 }
 
 /* ---------- 11. UPDATE / LOOP ---------- */
 function update(dt) {
+  /* --- Mock Rewarded Ad: pause the game, tick the timer --- */
+  if (mockAdActive) {
+    mockAdTimer -= dt / 1000;
+    if (mockAdTimer <= 0) {
+      mockAdActive = false;
+      const cb = mockAdCallback;
+      mockAdCallback = null;
+      if (cb) { try { cb(); } catch (e) { console.error(e); } }
+    }
+    return;   // game logic stays frozen while the ad is playing
+  }
+
   /* Screen transition */
   if (transitionAlpha < 1) {
     transitionAlpha = Math.min(1, transitionAlpha + dt / 250);
@@ -2689,7 +2924,8 @@ requestAnimationFrame(loop);
 console.log('[WaterSort] Booted. Menu first. Unlocked level ' + getUnlocked() +
             ' · Coins ' + coins +
             ' · Active BG: ' + activeBg +
-            ' · Active Tube: ' + activeTube);
+            ' · Active Tube: ' + activeTube +
+            ' · Ads removed: ' + adsRemoved);
 
 })();
 </script>
