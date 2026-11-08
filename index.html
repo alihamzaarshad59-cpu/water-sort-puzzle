@@ -83,6 +83,16 @@ let sfxEnabled = (() => {
   } catch (e) { return true; }
 })();
 
+/* Settings overlay */
+let showSettings = false;
+
+/* Screen transition alpha (1 = fully visible, 0 = fully black) */
+let transitionAlpha = 1;
+
+/* Squash animation state */
+let squashT = 0;
+let squashTubeIdx = -1;
+
 /* ---------- 3b. COINS ---------- */
 let coins = (() => {
   try {
@@ -307,11 +317,12 @@ let rewardGranted = false;       // true only if this win actually paid coins
 let rewardAmount = WIN_COINS;    // amount shown on the win screen
 
 const layout = {
-  tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, replayBtn:null, musicBtn:null, sfxBtn:null,
+  tubes:[], undoBtn:null, resetBtn:null, nextBtn:null, replayBtn:null, settingsBtn:null,
   coinBar:null, hintBtn:null, extraBtn:null
 };
 const ui = { playBtn:null, levelsBtn:null, helpBtn:null, shopBtn:null, dailyBtn:null, achBtn:null,
-             helpClose:null, backBtn:null, menuBtn:null, musicBtn:null, cells:[] };
+             helpClose:null, backBtn:null, menuBtn:null, settingsBtn:null,
+             settingsCloseBtn:null, musicToggle:null, sfxToggle:null, cells:[] };
 const achUI = { backBtn:null };
 
 /* Saved progress = highest unlocked level */
@@ -376,8 +387,14 @@ function showToast(text, dur) {
   toast = { text: String(text), t: 0, dur: dur || 2200 };
 }
 
+/* ---------- 4c. SCREEN TRANSITION HELPER ---------- */
+function goToState(newState) {
+  gameState = newState;
+  transitionAlpha = 0;
+}
+
 /* ============================================================
-   4c. VECTOR ICON LIBRARY
+   4d. VECTOR ICON LIBRARY
    ============================================================ */
 
 function drawCoinIcon(c, x, y, radius) {
@@ -638,6 +655,42 @@ function drawTrophyIcon(c, x, y, s, color) {
   c.restore();
 }
 
+/* ---------- Gear (Settings) Icon ---------- */
+function drawGearIcon(c, x, y, size, color) {
+  if (!(size > 0)) return;
+  const s = size;
+  const teeth = 8;
+  const outerR = s * 0.5;
+  const rootR = s * 0.36;
+  const holeR = s * 0.14;
+
+  c.save();
+  c.shadowBlur = 0; c.shadowColor = 'transparent';
+
+  /* Outer gear outline */
+  c.beginPath();
+  const steps = teeth * 2;
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * Math.PI * 2 - Math.PI / 2;
+    const r = (i % 2 === 0) ? outerR : rootR;
+    const px = x + Math.cos(a) * r;
+    const py = y + Math.sin(a) * r;
+    if (i === 0) c.moveTo(px, py);
+    else c.lineTo(px, py);
+  }
+  c.closePath();
+
+  /* Inner hole (subtracted via evenodd) */
+  c.moveTo(x + holeR, y);
+  c.arc(x, y, holeR, 0, Math.PI * 2, false);
+  c.closePath();
+
+  c.fillStyle = color;
+  c.fill('evenodd');
+
+  c.restore();
+}
+
 /* ---------- 5. LEVEL GEN ---------- */
 /* A new color every 3 levels (slower difficulty curve) */
 function colorsForLevel(lv) { return Math.min(4 + Math.floor((lv-1)/3), COLORS.length); }
@@ -793,13 +846,12 @@ function computeLayout() {
     }
   }
 
-  /* HUD buttons (top right): [UNDO] [RESET] [SFX] [music] */
-  const btnH = 34, btnW = 48, btnGap = 4, hudPad = 8, musicW = 34, sfxW = 38;
+  /* HUD buttons (top right): [UNDO] [RESET] [SETTINGS] */
+  const btnH = 34, btnW = 48, btnGap = 4, hudPad = 8, settingsW = 34;
   const btnY = (HUD_H - btnH)/2 + 4;
-  layout.musicBtn = { x: W - hudPad - musicW,                 y: btnY, w: musicW, h: btnH };
-  layout.sfxBtn   = { x: layout.musicBtn.x - btnGap - sfxW,   y: btnY, w: sfxW,   h: btnH, label:'SFX',   fs:11 };
-  layout.resetBtn = { x: layout.sfxBtn.x - btnGap - btnW,     y: btnY, w: btnW,   h: btnH, label:'RESET', fs:12 };
-  layout.undoBtn  = { x: layout.resetBtn.x - btnGap - btnW,   y: btnY, w: btnW,   h: btnH, label:'UNDO',  fs:12 };
+  layout.settingsBtn = { x: W - hudPad - settingsW,              y: btnY, w: settingsW, h: btnH };
+  layout.resetBtn    = { x: layout.settingsBtn.x - btnGap - btnW, y: btnY, w: btnW, h: btnH, label:'RESET', fs:12 };
+  layout.undoBtn     = { x: layout.resetBtn.x - btnGap - btnW,    y: btnY, w: btnW, h: btnH, label:'UNDO',  fs:12 };
 
   /* Bottom action bar: [coins] [HINT] [TUBE] — centered */
   const barH = 46, barGap = 8, barPad = 16, coinW = 78;
@@ -829,6 +881,8 @@ function initBoard(ts) {
   coinRewardT = 0;
   rewardGranted = false;
   rewardAmount = WIN_COINS;
+  squashT = 0;
+  squashTubeIdx = -1;
   if (view.w > 0) computeLayout();
 }
 
@@ -1182,21 +1236,36 @@ function toggleSfx() {
   initAudio();
   if (sfxEnabled) playSelect();      // test sound (silent when turned off)
 }
+
 function handleTap(p) {
   initAudio();
   if (musicEnabled) startBGM();
 
+  /* ========================================================
+     SETTINGS OVERLAY — intercepts all taps when open
+     ======================================================== */
+  if (showSettings) {
+    if (pointInRect(p, ui.settingsCloseBtn)) {
+      playSelect();
+      showSettings = false;
+      return;
+    }
+    if (pointInRect(p, ui.musicToggle)) { toggleMusic(); return; }
+    if (pointInRect(p, ui.sfxToggle))   { toggleSfx();   return; }
+    return; // consume all other taps (prevent background interaction)
+  }
+
   /* ---- MAIN MENU ---- */
   if (gameState === 'MENU') {
     if (showHelp) { playSelect(); showHelp = false; return; }
-    if (pointInRect(p, ui.musicBtn)) { toggleMusic(); return; }
+    if (pointInRect(p, ui.settingsBtn)) { playSelect(); showSettings = true; return; }
     if (pointInRect(p, ui.playBtn)) {
       playSelect();
-      gameState = 'PLAYING';
+      goToState('PLAYING');
       startLevel(getUnlocked());
     } else if (pointInRect(p, ui.levelsBtn)) {
       playSelect();
-      gameState = 'LEVELS';
+      goToState('LEVELS');
       mapAutoScroll = true;
     } else if (pointInRect(p, ui.dailyBtn)) {
       if (isDailyDoneToday()) {
@@ -1204,15 +1273,15 @@ function handleTap(p) {
         showToast('Daily already completed! Come back tomorrow.', 2600);
       } else {
         playSelect();
-        gameState = 'PLAYING';
+        goToState('PLAYING');
         startDaily();
       }
     } else if (pointInRect(p, ui.shopBtn)) {
       playSelect();
-      gameState = 'SHOP';
+      goToState('SHOP');
     } else if (pointInRect(p, ui.achBtn)) {
       playSelect();
-      gameState = 'ACHIEVEMENTS';
+      goToState('ACHIEVEMENTS');
     } else if (pointInRect(p, ui.helpBtn)) {
       playSelect();
       showHelp = true;
@@ -1222,13 +1291,13 @@ function handleTap(p) {
 
   /* ---- ACHIEVEMENTS ---- */
   if (gameState === 'ACHIEVEMENTS') {
-    if (pointInRect(p, achUI.backBtn)) { playSelect(); gameState = 'MENU'; }
+    if (pointInRect(p, achUI.backBtn)) { playSelect(); goToState('MENU'); }
     return;
   }
 
   /* ---- SHOP ---- */
   if (gameState === 'SHOP') {
-    if (pointInRect(p, shopUI.backBtn)) { playSelect(); gameState = 'MENU'; return; }
+    if (pointInRect(p, shopUI.backBtn)) { playSelect(); goToState('MENU'); return; }
     if (pointInRect(p, shopUI.tabs.bgs)) {
       if (shopTab !== 'bgs') { playSelect(); shopTab = 'bgs'; }
       return;
@@ -1280,12 +1349,12 @@ function handleTap(p) {
 
   /* ---- LEVEL MAP ---- */
   if (gameState === 'LEVELS') {
-    if (pointInRect(p, ui.backBtn)) { playSelect(); gameState = 'MENU'; return; }
+    if (pointInRect(p, ui.backBtn)) { playSelect(); goToState('MENU'); return; }
     if (p.y < 76) return;
     for (let i = 0; i < ui.cells.length; i++) {
       if (pointInRect(p, ui.cells[i])) {
         playSelect();
-        gameState = 'PLAYING';
+        goToState('PLAYING');
         startLevel(ui.cells[i].lv);
         return;
       }
@@ -1294,23 +1363,22 @@ function handleTap(p) {
   }
 
   /* ---- PLAYING ---- */
-  if (pointInRect(p, layout.musicBtn)) { toggleMusic(); return; }
-  if (pointInRect(p, layout.sfxBtn))   { toggleSfx();   return; }
+  if (pointInRect(p, layout.settingsBtn)) { playSelect(); showSettings = true; return; }
   if (won) {
     if (pointInRect(p, layout.nextBtn)) {
-      if (isDaily) { particles = []; toast = null; gameState = 'MENU'; }   // daily: back to menu
+      if (isDaily) { particles = []; toast = null; goToState('MENU'); }
       else nextLevel();
       return;
     }
     if (!isDaily) {
       if (pointInRect(p, layout.replayBtn)) { playSelect(); startLevel(level); return; }
-      if (pointInRect(p, ui.menuBtn))       { particles = []; toast = null; gameState = 'MENU'; return; }
+      if (pointInRect(p, ui.menuBtn))       { particles = []; toast = null; goToState('MENU'); return; }
     }
     return;
   }
   if (pointInRect(p, ui.backBtn)) {
     anim = null; selected = -1; hint = null; toast = null;
-    gameState = 'MENU';
+    goToState('MENU');
     return;
   }
   if (anim) return;
@@ -1343,7 +1411,7 @@ let ptr = null;
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   const p = getPointerPos(e);
-  if (gameState === 'LEVELS') {
+  if (gameState === 'LEVELS' && !showSettings) {
     ptr = { startY:p.y, lastY:p.y, moved:false };
   } else {
     handleTap(p);
@@ -1359,12 +1427,12 @@ canvas.addEventListener('pointermove', e => {
   ptr.lastY = p.y;
 });
 canvas.addEventListener('pointerup', e => {
-  if (ptr && !ptr.moved && gameState === 'LEVELS') handleTap(getPointerPos(e));
+  if (ptr && !ptr.moved && gameState === 'LEVELS' && !showSettings) handleTap(getPointerPos(e));
   ptr = null;
 });
 canvas.addEventListener('pointercancel', () => { ptr = null; });
 canvas.addEventListener('wheel', e => {
-  if (gameState !== 'LEVELS') return;
+  if (gameState !== 'LEVELS' || showSettings) return;
   e.preventDefault();
   mapScroll = Math.max(0, Math.min(mapScroll + e.deltaY, mapMaxScroll));
 }, { passive:false });
@@ -1592,8 +1660,7 @@ function drawHUD() {
 
   drawButton(layout.undoBtn, history.length > 0 && !won);
   drawButton(layout.resetBtn, !won);
-  drawButton(layout.sfxBtn, sfxEnabled);       // dim = SFX off
-  drawMusicBtn(layout.musicBtn);
+  drawSettingsBtn(layout.settingsBtn);
 }
 function drawButton(b, enabled) {
   if (!b) return;
@@ -1608,6 +1675,22 @@ function drawButton(b, enabled) {
   ctx.font = '800 ' + (b.fs || 14) + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 0.5);
+  ctx.restore();
+}
+
+function drawSettingsBtn(b) {
+  if (!b) return;
+  ctx.save();
+  ctx.beginPath(); rr(ctx, b.x, b.y, b.w, b.h, 11);
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(160,210,255,0.45)';
+  ctx.stroke();
+
+  const icoSize = Math.min(b.w, b.h) * 0.62;
+  drawGearIcon(ctx, b.x + b.w/2, b.y + b.h/2, icoSize, '#dceaff');
+
   ctx.restore();
 }
 
@@ -1627,6 +1710,21 @@ function drawMusicBtn(b) {
   ctx.restore();
 }
 
+/* Wavy-top fill used for the liquid surface */
+function drawWavyFill(x, y, w, h, color) {
+  const now = performance.now();
+  ctx.beginPath();
+  ctx.moveTo(x, y + h);
+  for (let px = x; px <= x + w; px += 2) {
+    const waveY = y + Math.sin((px + now * 0.005) * 0.05) * 3;
+    ctx.lineTo(px, waveY);
+  }
+  ctx.lineTo(x + w, y + h);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
 function drawTube(i) {
   const r = layout.tubes[i]; if (!r) return;
   const disp = getDisplay(i);
@@ -1641,6 +1739,23 @@ function drawTube(i) {
   const x = r.x + ox, y = r.y + oy, w = r.w, h = r.h;
   const radius = Math.min(w*0.34, 20);
   const wall = Math.max(3, w*0.075);
+  const cx = x + w/2, cy = y + h/2;
+
+  /* --- Transforms (selection bounce + destination squash) --- */
+  ctx.save();
+
+  if (isSel) {
+    const scl = 1 + 0.05 * Math.sin(performance.now() * 0.015);
+    ctx.translate(cx, cy);
+    ctx.scale(scl, scl);
+    ctx.translate(-cx, -cy);
+  }
+  if (squashT > 0 && squashTubeIdx === i) {
+    const squash = 1 - 0.12 * squashT;
+    ctx.translate(cx, cy);
+    ctx.scale(1/squash, squash);
+    ctx.translate(-cx, -cy);
+  }
 
   ctx.beginPath(); rr(ctx, x, y, w, h, radius);
   ctx.fillStyle = skin.fill; ctx.fill();
@@ -1655,16 +1770,25 @@ function drawTube(i) {
   const topGap = w * 0.09;
   const unitH = (h - 2*wall - topGap) / CAP;
 
-  let cy = innerBottom;
+  /* Determine which block is the topmost one (gets the wave) */
+  const hasFrac = disp.frac > 0.002 && disp.fracColor;
+  const topmostIdx = hasFrac ? disp.colors.length : (disp.colors.length - 1);
+
+  let cy2 = innerBottom;
   for (let k = 0; k < disp.colors.length; k++) {
-    cy -= unitH;
-    ctx.fillStyle = HEX[disp.colors[k]] || '#888888';
-    ctx.fillRect(innerX, cy, innerW, unitH + 0.6);
+    cy2 -= unitH;
+    const color = HEX[disp.colors[k]] || '#888888';
+    if (k === topmostIdx) {
+      drawWavyFill(innerX, cy2, innerW, unitH + 0.6, color);
+    } else {
+      ctx.fillStyle = color;
+      ctx.fillRect(innerX, cy2, innerW, unitH + 0.6);
+    }
   }
-  if (disp.frac > 0.002 && disp.fracColor) {
+  if (hasFrac) {
     const fh = unitH * Math.min(1, disp.frac);
-    ctx.fillStyle = HEX[disp.fracColor] || '#888888';
-    ctx.fillRect(innerX, cy - fh, innerW, fh + 0.6);
+    const color = HEX[disp.fracColor] || '#888888';
+    drawWavyFill(innerX, cy2 - fh, innerW, fh + 0.6, color);
   }
   ctx.restore();
 
@@ -1693,6 +1817,8 @@ function drawTube(i) {
     ctx.stroke();
     ctx.restore();
   }
+
+  ctx.restore();
 }
 
 function drawStream() {
@@ -1781,7 +1907,6 @@ function drawWinOverlay() {
   ctx.fillText(isDaily ? 'BACK TO MENU' : 'NEXT LEVEL', W/2, layout.nextBtn.y + bh/2 + 1);
 
   if (isDaily) {
-    /* Daily has no replay / second menu button */
     layout.replayBtn = null;
     ui.menuBtn = null;
     ctx.restore();
@@ -1922,6 +2047,106 @@ function drawHelpOverlay() {
   ctx.restore();
 }
 
+/* ---------- TOGGLE SWITCH ---------- */
+function drawToggle(b, on) {
+  if (!b) return;
+  ctx.save();
+
+  /* Pill */
+  ctx.beginPath();
+  rr(ctx, b.x, b.y, b.w, b.h, b.h/2);
+  ctx.fillStyle = on ? '#3ddc84' : 'rgba(120,130,145,0.75)';
+  ctx.fill();
+
+  /* Border */
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = on ? 'rgba(143,255,190,0.7)' : 'rgba(200,210,225,0.28)';
+  ctx.stroke();
+
+  /* Knob */
+  const cr = b.h/2 - 4;
+  const cx = on ? (b.x + b.w - b.h/2) : (b.x + b.h/2);
+  ctx.beginPath();
+  ctx.arc(cx, b.y + b.h/2, cr, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = 'rgba(0,0,0,0.35)';
+  ctx.shadowBlur = 3;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = 'transparent';
+
+  ctx.restore();
+}
+
+/* ---------- SETTINGS OVERLAY ---------- */
+function drawSettingsOverlay() {
+  const W = view.w, H = view.h;
+
+  ctx.save();
+
+  /* Dim background */
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, W, H);
+
+  /* Panel */
+  const panelW = Math.min(320, W - 40);
+  const panelH = 320;
+  const px = (W - panelW) / 2;
+  const py = (H - panelH) / 2;
+
+  ctx.beginPath();
+  rr(ctx, px, py, panelW, panelH, 22);
+  ctx.fillStyle = '#0e1626';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(160,210,255,0.45)';
+  ctx.stroke();
+
+  /* Title */
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#eaf2ff';
+  ctx.font = '800 22px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('SETTINGS', W/2, py + 42);
+
+  /* Toggle rows */
+  const rowH = 56;
+  const row1Y = py + 80;
+  const row2Y = row1Y + rowH + 8;
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#dceaff';
+  ctx.font = '700 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText('Music', px + 24, row1Y + rowH/2);
+  ctx.fillText('Sound Effects (SFX)', px + 24, row2Y + rowH/2);
+
+  const togW = 54, togH = 30;
+  ui.musicToggle = { x: px + panelW - 24 - togW, y: row1Y + (rowH - togH)/2, w: togW, h: togH };
+  ui.sfxToggle   = { x: px + panelW - 24 - togW, y: row2Y + (rowH - togH)/2, w: togW, h: togH };
+  drawToggle(ui.musicToggle, musicEnabled);
+  drawToggle(ui.sfxToggle,   sfxEnabled);
+
+  /* Close button */
+  const cbW = Math.min(180, panelW - 48);
+  const cbH = 46;
+  ui.settingsCloseBtn = { x: (W - cbW)/2, y: py + panelH - 24 - cbH, w: cbW, h: cbH };
+  const cg = ctx.createLinearGradient(0, ui.settingsCloseBtn.y, 0, ui.settingsCloseBtn.y + cbH);
+  cg.addColorStop(0, '#4aa8ff');
+  cg.addColorStop(1, '#2a78d6');
+  ctx.beginPath();
+  rr(ctx, ui.settingsCloseBtn.x, ui.settingsCloseBtn.y, cbW, cbH, 14);
+  ctx.fillStyle = cg;
+  ctx.fill();
+  ctx.fillStyle = '#04162e';
+  ctx.font = '800 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('CLOSE', W/2, ui.settingsCloseBtn.y + cbH/2 + 1);
+
+  ctx.restore();
+}
+
 function drawMainMenu() {
   const W = view.w, H = view.h;
   ctx.fillStyle = bgGradient || '#0b1220';
@@ -1985,8 +2210,9 @@ function drawMainMenu() {
                 { icon:'trophy', sub: unlockedAch.length + '/' + ACHIEVEMENTS.length + ' unlocked', fs:15 });
   drawBigButton(ui.helpBtn,   'HOW TO PLAY', '#b57bff', '#8a4fd6', '#1a0833', { fs:18 });
 
-  ui.musicBtn = { x: W - 16 - 46, y: 16, w: 46, h: 46 };
-  drawMusicBtn(ui.musicBtn);
+  /* Settings gear button (top-right) */
+  ui.settingsBtn = { x: W - 16 - 46, y: 16, w: 46, h: 46 };
+  drawSettingsBtn(ui.settingsBtn);
 
   drawCoinPill(16, 16, 84, 46);
 
@@ -2344,7 +2570,7 @@ function drawToast() {
 
   let py;
   if (gameState === 'PLAYING' && won) {
-    py = 90;                                   // keep clear of the win-screen buttons
+    py = 90;
   } else if (gameState === 'PLAYING' && layout.hintBtn) {
     py = layout.hintBtn.y - ph - 16;
   } else {
@@ -2370,15 +2596,40 @@ function render() {
   else                                   drawPlaying();
   drawParticles();
   if (gameState !== 'LEVELS') drawToast();
+
+  /* Settings overlay on top of everything */
+  if (showSettings) drawSettingsOverlay();
+
+  /* Screen transition (fade-in from black) */
+  if (transitionAlpha < 1) {
+    ctx.save();
+    ctx.globalAlpha = 1 - transitionAlpha;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, view.w, view.h);
+    ctx.restore();
+  }
 }
 
 /* ---------- 11. UPDATE / LOOP ---------- */
 function update(dt) {
+  /* Screen transition */
+  if (transitionAlpha < 1) {
+    transitionAlpha = Math.min(1, transitionAlpha + dt / 250);
+  }
+
   if (anim) {
     anim.elapsed += dt;
     const raw = Math.min(1, anim.elapsed / anim.dur);
     anim.p = easeInOutQuad(raw);
-    if (raw >= 1) { anim = null; checkWin(); }
+    if (raw >= 1) {
+      squashTubeIdx = anim.to;
+      squashT = 1;
+      anim = null;
+      checkWin();
+    }
+  }
+  if (squashT > 0) {
+    squashT = Math.max(0, squashT - dt / 220);
   }
   if (shakeT > 0) {
     shakeT = Math.max(0, shakeT - dt);
@@ -2428,8 +2679,8 @@ function resize() {
 /* Boot */
 loadShopProgress();          // MUST be before resize() so we build the right bg
 
-gameState = 'MENU';
 startLevel(level);
+goToState('MENU');           // fade-in from black on first load
 resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
